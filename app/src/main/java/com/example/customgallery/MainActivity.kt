@@ -5,8 +5,8 @@ import android.content.ContentUris
 import android.content.Context
 import android.content.pm.PackageManager
 import android.net.Uri
-import android.os.Build
 import android.os.Bundle
+import android.os.Build
 import android.provider.MediaStore
 import android.util.Log
 import android.widget.MediaController
@@ -208,18 +208,31 @@ class GalleryViewModel : ViewModel() {
         ) { "?" }
         val selectionArgs = mediaTypeFilters.map { it.toString() }.toTypedArray()
 
-        val orderBy = "${MediaStore.Files.FileColumns.DATE_MODIFIED} DESC LIMIT $limit OFFSET $offset"
+        val sortOrder = "${MediaStore.Files.FileColumns.DATE_MODIFIED} DESC"
+        val queryArgs = Bundle().apply {
+            putString(android.content.ContentResolver.QUERY_ARG_SQL_SELECTION, selection)
+            putStringArray(android.content.ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS, selectionArgs)
+            putString(android.content.ContentResolver.QUERY_ARG_SQL_SORT_ORDER, sortOrder)
+            putString(android.content.ContentResolver.QUERY_ARG_SQL_LIMIT, "$limit OFFSET $offset")
+        }
 
         val result = mutableListOf<MediaItem>()
         val filesUri = MediaStore.Files.getContentUri("external")
 
-        context.contentResolver.query(
-            filesUri,
-            projection,
-            selection,
-            selectionArgs,
-            orderBy
-        )?.use { cursor ->
+        val cursor = try {
+            context.contentResolver.query(filesUri, projection, queryArgs, null)
+        } catch (exception: Exception) {
+            Log.w(TAG, "Falling back to legacy media query", exception)
+            context.contentResolver.query(
+                filesUri,
+                projection,
+                selection,
+                selectionArgs,
+                "$sortOrder LIMIT $limit OFFSET $offset"
+            )
+        }
+
+        cursor?.use { cursor ->
             val idColumn = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns._ID)
             val mediaTypeColumn = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.MEDIA_TYPE)
             val addedColumn = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.DATE_ADDED)
@@ -492,6 +505,19 @@ private fun GalleryContent(
                         contentAlignment = Alignment.Center
                     ) {
                         CircularProgressIndicator()
+                    }
+                }
+            }
+
+            if (!state.isLoading && state.mediaItems.isEmpty()) {
+                item(span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(24.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text("No photos or videos found.")
                     }
                 }
             }
