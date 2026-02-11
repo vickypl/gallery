@@ -37,7 +37,6 @@ jobs:
         working-directory: gallery
         env:
           JAVA_HOME: ${{ steps.setup-java.outputs.path }}
-          PATH: ${{ steps.setup-java.outputs.path }}/bin:${{ env.PATH }}
         run: |
           echo "JAVA_HOME=$JAVA_HOME"
           java -version
@@ -47,7 +46,6 @@ jobs:
         working-directory: gallery
         env:
           JAVA_HOME: ${{ steps.setup-java.outputs.path }}
-          PATH: ${{ steps.setup-java.outputs.path }}/bin:${{ env.PATH }}
         run: gradle :app:assembleDebug
 
       - name: Copy APK to gallery/apk/
