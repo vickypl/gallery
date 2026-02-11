@@ -19,6 +19,7 @@ jobs:
           path: gallery
 
       - name: Set up JDK 17
+        id: setup-java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -32,8 +33,21 @@ jobs:
         with:
           gradle-version: 8.7
 
+      - name: Verify Java runtime
+        working-directory: gallery
+        env:
+          JAVA_HOME: ${{ steps.setup-java.outputs.path }}
+          PATH: ${{ steps.setup-java.outputs.path }}/bin:${{ env.PATH }}
+        run: |
+          echo "JAVA_HOME=$JAVA_HOME"
+          java -version
+          gradle -version
+
       - name: Build debug APK
         working-directory: gallery
+        env:
+          JAVA_HOME: ${{ steps.setup-java.outputs.path }}
+          PATH: ${{ steps.setup-java.outputs.path }}/bin:${{ env.PATH }}
         run: gradle :app:assembleDebug
 
       - name: Copy APK to gallery/apk/
