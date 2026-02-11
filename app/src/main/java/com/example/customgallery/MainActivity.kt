@@ -81,12 +81,22 @@ data class GalleryUiState(
     val selectedMediaIds: Set<String> = emptySet()
 )
 
+data class MediaPermissionState(
+    val canReadImages: Boolean,
+    val canReadVideos: Boolean,
+    val hasAnyMediaAccess: Boolean
+)
+
 class GalleryViewModel : ViewModel() {
     private val _uiState = MutableStateFlow(GalleryUiState())
     val uiState: StateFlow<GalleryUiState> = _uiState
 
-    fun loadMedia(context: Context) {
-        val mediaItems = queryMedia(context)
+    fun loadMedia(context: Context, canReadImages: Boolean, canReadVideos: Boolean) {
+        val mediaItems = queryMedia(
+            context = context,
+            canReadImages = canReadImages,
+            canReadVideos = canReadVideos
+        )
         _uiState.update { current -> current.copy(mediaItems = mediaItems) }
     }
 
@@ -104,24 +114,32 @@ class GalleryViewModel : ViewModel() {
         }
     }
 
-    private fun queryMedia(context: Context): List<MediaItem> {
-        val photos = queryMediaByType(
-            context = context,
-            collection = MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-            idColumnName = MediaStore.Images.Media._ID,
-            dateAddedColumnName = MediaStore.Images.Media.DATE_ADDED,
-            dateModifiedColumnName = MediaStore.Images.Media.DATE_MODIFIED,
-            type = MediaType.PHOTO
-        )
+    private fun queryMedia(context: Context, canReadImages: Boolean, canReadVideos: Boolean): List<MediaItem> {
+        val photos = if (canReadImages) {
+            queryMediaByType(
+                context = context,
+                collection = MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                idColumnName = MediaStore.Images.Media._ID,
+                dateAddedColumnName = MediaStore.Images.Media.DATE_ADDED,
+                dateModifiedColumnName = MediaStore.Images.Media.DATE_MODIFIED,
+                type = MediaType.PHOTO
+            )
+        } else {
+            emptyList()
+        }
 
-        val videos = queryMediaByType(
-            context = context,
-            collection = MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
-            idColumnName = MediaStore.Video.Media._ID,
-            dateAddedColumnName = MediaStore.Video.Media.DATE_ADDED,
-            dateModifiedColumnName = MediaStore.Video.Media.DATE_MODIFIED,
-            type = MediaType.VIDEO
-        )
+        val videos = if (canReadVideos) {
+            queryMediaByType(
+                context = context,
+                collection = MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
+                idColumnName = MediaStore.Video.Media._ID,
+                dateAddedColumnName = MediaStore.Video.Media.DATE_ADDED,
+                dateModifiedColumnName = MediaStore.Video.Media.DATE_MODIFIED,
+                type = MediaType.VIDEO
+            )
+        } else {
+            emptyList()
+        }
 
         return (photos + videos).sortedByDescending { it.dateTakenOrModified }
     }
@@ -195,30 +213,91 @@ private fun GalleryScreen(viewModel: GalleryViewModel) {
     val context = LocalContext.current
     val state by viewModel.uiState.collectAsStateWithLifecycle()
 
-    val permissions = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+    val permissions = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+        listOf(
+            Manifest.permission.READ_MEDIA_IMAGES,
+            Manifest.permission.READ_MEDIA_VIDEO,
+            Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED
+        )
+    } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
         listOf(Manifest.permission.READ_MEDIA_IMAGES, Manifest.permission.READ_MEDIA_VIDEO)
     } else {
         listOf(Manifest.permission.READ_EXTERNAL_STORAGE)
     }
 
-    var hasPermission by remember {
-        mutableStateOf(permissions.all { permission ->
-            ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
-        })
+    fun getPermissionState(): MediaPermissionState {
+        val hasLegacyPermission = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.READ_EXTERNAL_STORAGE
+        ) == PackageManager.PERMISSION_GRANTED
+
+        val hasImagePermission = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.READ_MEDIA_IMAGES
+        ) == PackageManager.PERMISSION_GRANTED
+
+        val hasVideoPermission = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.READ_MEDIA_VIDEO
+        ) == PackageManager.PERMISSION_GRANTED
+
+        val hasUserSelectedVisualPermission = Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE &&
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED
+            ) == PackageManager.PERMISSION_GRANTED
+
+        return when {
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE -> {
+                val hasAnyMediaAccess = hasImagePermission || hasVideoPermission || hasUserSelectedVisualPermission
+                MediaPermissionState(
+                    canReadImages = hasImagePermission || hasUserSelectedVisualPermission,
+                    canReadVideos = hasVideoPermission || hasUserSelectedVisualPermission,
+                    hasAnyMediaAccess = hasAnyMediaAccess
+                )
+            }
+
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU -> {
+                val hasAnyMediaAccess = hasImagePermission || hasVideoPermission
+                MediaPermissionState(
+                    canReadImages = hasImagePermission,
+                    canReadVideos = hasVideoPermission,
+                    hasAnyMediaAccess = hasAnyMediaAccess
+                )
+            }
+
+            else -> MediaPermissionState(
+                canReadImages = hasLegacyPermission,
+                canReadVideos = hasLegacyPermission,
+                hasAnyMediaAccess = hasLegacyPermission
+            )
+        }
+    }
+
+    var permissionState by remember {
+        mutableStateOf(getPermissionState())
     }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions()
-    ) { granted ->
-        hasPermission = permissions.all { permission -> granted[permission] == true }
-        if (hasPermission) {
-            viewModel.loadMedia(context)
+    ) {
+        permissionState = getPermissionState()
+        if (permissionState.hasAnyMediaAccess) {
+            viewModel.loadMedia(
+                context = context,
+                canReadImages = permissionState.canReadImages,
+                canReadVideos = permissionState.canReadVideos
+            )
         }
     }
 
-    if (hasPermission) {
-        remember(hasPermission) {
-            viewModel.loadMedia(context)
+    if (permissionState.hasAnyMediaAccess) {
+        remember(permissionState) {
+            viewModel.loadMedia(
+                context = context,
+                canReadImages = permissionState.canReadImages,
+                canReadVideos = permissionState.canReadVideos
+            )
             true
         }
         GalleryContent(
