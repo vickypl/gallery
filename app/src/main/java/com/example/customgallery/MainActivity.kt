@@ -301,10 +301,10 @@ private fun GalleryContent(
                                 .background(Color(0xAA000000))
                                 .padding(4.dp)
                         ) {
-                            Icon(
-                                imageVector = androidx.compose.material.icons.Icons.Default.PlayArrow,
-                                contentDescription = "Video",
-                                tint = Color.White
+                            Text(
+                                text = "▶",
+                                color = Color.White,
+                                fontWeight = FontWeight.Bold
                             )
                         }
                     }
@@ -374,13 +374,8 @@ private fun FullscreenMediaDialog(mediaItem: MediaItem, onDismiss: () -> Unit) {
             }
         },
         icon = {
-            Icon(
-                imageVector = if (mediaItem.type == MediaType.PHOTO) {
-                    androidx.compose.material.icons.Icons.Default.Photo
-                } else {
-                    androidx.compose.material.icons.Icons.Default.Videocam
-                },
-                contentDescription = null
+            Text(
+                text = if (mediaItem.type == MediaType.PHOTO) "📷" else "🎥"
             )
         }
     )
