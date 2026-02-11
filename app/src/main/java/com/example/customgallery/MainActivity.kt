@@ -610,8 +610,7 @@ private fun FullscreenMediaDialog(
         onDismissRequest = onDismiss,
         text = {
             HorizontalPager(
-                state = pagerState,
-                beyondBoundsPageCount = 1
+                state = pagerState
             ) { page ->
                 val mediaItem = mediaItems[page]
                 if (mediaItem.type == MediaType.PHOTO) {
