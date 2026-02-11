@@ -8,6 +8,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.MediaStore
+import android.util.Log
 import android.widget.MediaController
 import android.widget.VideoView
 import androidx.activity.ComponentActivity
@@ -60,6 +61,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import coil.compose.AsyncImage
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
@@ -94,6 +96,10 @@ data class MediaPermissionState(
 )
 
 class GalleryViewModel : ViewModel() {
+    companion object {
+        private const val TAG = "GalleryViewModel"
+    }
+
     private val _uiState = MutableStateFlow(GalleryUiState())
     val uiState: StateFlow<GalleryUiState> = _uiState
 
@@ -126,24 +132,31 @@ class GalleryViewModel : ViewModel() {
         _uiState.update { it.copy(isLoading = true) }
 
         viewModelScope.launch(Dispatchers.IO) {
-            val page = queryMediaPage(
-                context = context,
-                canReadImages = lastCanReadImages,
-                canReadVideos = lastCanReadVideos,
-                limit = pageSize,
-                offset = nextOffset
-            )
-
-            val pageHasMore = page.size == pageSize
-            val newOffset = nextOffset + page.size
-            nextOffset = newOffset
-
-            _uiState.update {
-                it.copy(
-                    mediaItems = it.mediaItems + page,
-                    hasMoreItems = pageHasMore,
-                    isLoading = false
+            try {
+                val page = queryMediaPage(
+                    context = context,
+                    canReadImages = lastCanReadImages,
+                    canReadVideos = lastCanReadVideos,
+                    limit = pageSize,
+                    offset = nextOffset
                 )
+
+                val pageHasMore = page.size == pageSize
+                val newOffset = nextOffset + page.size
+                nextOffset = newOffset
+
+                _uiState.update {
+                    it.copy(
+                        mediaItems = it.mediaItems + page,
+                        hasMoreItems = pageHasMore,
+                        isLoading = false
+                    )
+                }
+            } catch (cancellationException: CancellationException) {
+                throw cancellationException
+            } catch (exception: Exception) {
+                Log.e(TAG, "Failed to load media page", exception)
+                _uiState.update { it.copy(isLoading = false, hasMoreItems = false) }
             }
         }
     }
