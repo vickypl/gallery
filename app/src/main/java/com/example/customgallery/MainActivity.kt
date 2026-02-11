@@ -8,6 +8,8 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.MediaStore
+import android.widget.MediaController
+import android.widget.VideoView
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -37,6 +39,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -49,6 +52,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -57,52 +61,88 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 
-data class PhotoItem(
+enum class MediaType {
+    PHOTO,
+    VIDEO
+}
+
+data class MediaItem(
     val id: Long,
     val uri: Uri,
-    val dateTakenOrModified: Long
-)
+    val dateTakenOrModified: Long,
+    val type: MediaType
+) {
+    val stableId: String = "${type.name}-$id"
+}
 
 data class GalleryUiState(
-    val photos: List<PhotoItem> = emptyList(),
+    val mediaItems: List<MediaItem> = emptyList(),
     val gridColumns: Int = 3,
-    val selectedPhotoIds: Set<Long> = emptySet()
+    val selectedMediaIds: Set<String> = emptySet()
 )
 
 class GalleryViewModel : ViewModel() {
     private val _uiState = MutableStateFlow(GalleryUiState())
     val uiState: StateFlow<GalleryUiState> = _uiState
 
-    fun loadPhotos(context: Context) {
-        val photos = queryPhotos(context)
-        _uiState.update { current -> current.copy(photos = photos) }
+    fun loadMedia(context: Context) {
+        val mediaItems = queryMedia(context)
+        _uiState.update { current -> current.copy(mediaItems = mediaItems) }
     }
 
     fun setGridColumns(columns: Int) {
         _uiState.update { current -> current.copy(gridColumns = columns.coerceIn(2, 6)) }
     }
 
-    fun toggleSelection(photoId: Long) {
+    fun toggleSelection(mediaId: String) {
         _uiState.update { current ->
-            val mutableSet = current.selectedPhotoIds.toMutableSet()
-            if (!mutableSet.add(photoId)) {
-                mutableSet.remove(photoId)
+            val mutableSet = current.selectedMediaIds.toMutableSet()
+            if (!mutableSet.add(mediaId)) {
+                mutableSet.remove(mediaId)
             }
-            current.copy(selectedPhotoIds = mutableSet)
+            current.copy(selectedMediaIds = mutableSet)
         }
     }
 
-    private fun queryPhotos(context: Context): List<PhotoItem> {
-        val collection = MediaStore.Images.Media.EXTERNAL_CONTENT_URI
-        val projection = arrayOf(
-            MediaStore.Images.Media._ID,
-            MediaStore.Images.Media.DATE_ADDED,
-            MediaStore.Images.Media.DATE_MODIFIED
+    private fun queryMedia(context: Context): List<MediaItem> {
+        val photos = queryMediaByType(
+            context = context,
+            collection = MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+            idColumnName = MediaStore.Images.Media._ID,
+            dateAddedColumnName = MediaStore.Images.Media.DATE_ADDED,
+            dateModifiedColumnName = MediaStore.Images.Media.DATE_MODIFIED,
+            type = MediaType.PHOTO
         )
 
-        val orderBy = "${MediaStore.Images.Media.DATE_MODIFIED} DESC"
+        val videos = queryMediaByType(
+            context = context,
+            collection = MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
+            idColumnName = MediaStore.Video.Media._ID,
+            dateAddedColumnName = MediaStore.Video.Media.DATE_ADDED,
+            dateModifiedColumnName = MediaStore.Video.Media.DATE_MODIFIED,
+            type = MediaType.VIDEO
+        )
 
-        val result = mutableListOf<PhotoItem>()
+        return (photos + videos).sortedByDescending { it.dateTakenOrModified }
+    }
+
+    private fun queryMediaByType(
+        context: Context,
+        collection: Uri,
+        idColumnName: String,
+        dateAddedColumnName: String,
+        dateModifiedColumnName: String,
+        type: MediaType
+    ): List<MediaItem> {
+        val projection = arrayOf(
+            idColumnName,
+            dateAddedColumnName,
+            dateModifiedColumnName
+        )
+
+        val orderBy = "$dateModifiedColumnName DESC"
+
+        val result = mutableListOf<MediaItem>()
         context.contentResolver.query(
             collection,
             projection,
@@ -110,9 +150,9 @@ class GalleryViewModel : ViewModel() {
             null,
             orderBy
         )?.use { cursor ->
-            val idColumn = cursor.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
-            val addedColumn = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DATE_ADDED)
-            val modifiedColumn = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DATE_MODIFIED)
+            val idColumn = cursor.getColumnIndexOrThrow(idColumnName)
+            val addedColumn = cursor.getColumnIndexOrThrow(dateAddedColumnName)
+            val modifiedColumn = cursor.getColumnIndexOrThrow(dateModifiedColumnName)
 
             while (cursor.moveToNext()) {
                 val id = cursor.getLong(idColumn)
@@ -120,16 +160,17 @@ class GalleryViewModel : ViewModel() {
                 val dateModified = cursor.getLong(modifiedColumn)
                 val uri = ContentUris.withAppendedId(collection, id)
                 result.add(
-                    PhotoItem(
+                    MediaItem(
                         id = id,
                         uri = uri,
-                        dateTakenOrModified = maxOf(dateAdded, dateModified)
+                        dateTakenOrModified = maxOf(dateAdded, dateModified),
+                        type = type
                     )
                 )
             }
         }
 
-        return result.sortedByDescending { it.dateTakenOrModified }
+        return result
     }
 }
 
@@ -154,30 +195,30 @@ private fun GalleryScreen(viewModel: GalleryViewModel) {
     val context = LocalContext.current
     val state by viewModel.uiState.collectAsStateWithLifecycle()
 
-    val permission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-        Manifest.permission.READ_MEDIA_IMAGES
+    val permissions = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        listOf(Manifest.permission.READ_MEDIA_IMAGES, Manifest.permission.READ_MEDIA_VIDEO)
     } else {
-        Manifest.permission.READ_EXTERNAL_STORAGE
+        listOf(Manifest.permission.READ_EXTERNAL_STORAGE)
     }
 
     var hasPermission by remember {
-        mutableStateOf(
+        mutableStateOf(permissions.all { permission ->
             ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
-        )
+        })
     }
 
     val permissionLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestPermission()
+        contract = ActivityResultContracts.RequestMultiplePermissions()
     ) { granted ->
-        hasPermission = granted
-        if (granted) {
-            viewModel.loadPhotos(context)
+        hasPermission = permissions.all { permission -> granted[permission] == true }
+        if (hasPermission) {
+            viewModel.loadMedia(context)
         }
     }
 
     if (hasPermission) {
         remember(hasPermission) {
-            viewModel.loadPhotos(context)
+            viewModel.loadMedia(context)
             true
         }
         GalleryContent(
@@ -186,7 +227,7 @@ private fun GalleryScreen(viewModel: GalleryViewModel) {
             onToggleSelection = viewModel::toggleSelection
         )
     } else {
-        PermissionView(onRequestPermission = { permissionLauncher.launch(permission) })
+        PermissionView(onRequestPermission = { permissionLauncher.launch(permissions.toTypedArray()) })
     }
 }
 
@@ -199,7 +240,7 @@ private fun PermissionView(onRequestPermission: () -> Unit) {
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Text(text = "Photo access is required to load images.")
+        Text(text = "Media access is required to load photos and videos.")
         TextButton(onClick = onRequestPermission) {
             Text("Grant Access")
         }
@@ -211,9 +252,9 @@ private fun PermissionView(onRequestPermission: () -> Unit) {
 private fun GalleryContent(
     state: GalleryUiState,
     onGridColumnChange: (Int) -> Unit,
-    onToggleSelection: (Long) -> Unit
+    onToggleSelection: (String) -> Unit
 ) {
-    var fullscreenPhoto by remember { mutableStateOf<PhotoItem?>(null) }
+    var fullscreenMedia by remember { mutableStateOf<MediaItem?>(null) }
 
     Column(modifier = Modifier.fillMaxSize()) {
         GridControl(
@@ -229,27 +270,44 @@ private fun GalleryContent(
             horizontalArrangement = Arrangement.spacedBy(4.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp)
         ) {
-            items(state.photos, key = { it.id }) { photo ->
-                val selected = state.selectedPhotoIds.contains(photo.id)
+            items(state.mediaItems, key = { it.stableId }) { item ->
+                val selected = state.selectedMediaIds.contains(item.stableId)
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
                         .clip(MaterialTheme.shapes.small)
                         .background(MaterialTheme.colorScheme.surfaceVariant)
                         .clickable {
-                            fullscreenPhoto = photo
+                            fullscreenMedia = item
                         }
                         .animateItemPlacement()
                 ) {
                     AsyncImage(
-                        model = photo.uri,
+                        model = item.uri,
                         contentDescription = null,
                         modifier = Modifier
                             .fillMaxWidth()
                             .size(140.dp)
-                            .clickable { onToggleSelection(photo.id) },
+                            .clickable { onToggleSelection(item.stableId) },
                         contentScale = ContentScale.Crop
                     )
+
+                    if (item.type == MediaType.VIDEO) {
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.BottomEnd)
+                                .padding(8.dp)
+                                .clip(CircleShape)
+                                .background(Color(0xAA000000))
+                                .padding(4.dp)
+                        ) {
+                            Icon(
+                                imageVector = androidx.compose.material.icons.Icons.Default.PlayArrow,
+                                contentDescription = "Video",
+                                tint = Color.White
+                            )
+                        }
+                    }
 
                     if (selected) {
                         Box(
@@ -269,10 +327,10 @@ private fun GalleryContent(
         }
     }
 
-    fullscreenPhoto?.let { item ->
-        FullscreenPhotoDialog(
-            photoUri = item.uri,
-            onDismiss = { fullscreenPhoto = null }
+    fullscreenMedia?.let { item ->
+        FullscreenMediaDialog(
+            mediaItem = item,
+            onDismiss = { fullscreenMedia = null }
         )
     }
 }
@@ -295,16 +353,20 @@ private fun GridControl(columns: Int, onGridColumnChange: (Int) -> Unit) {
 }
 
 @Composable
-private fun FullscreenPhotoDialog(photoUri: Uri, onDismiss: () -> Unit) {
+private fun FullscreenMediaDialog(mediaItem: MediaItem, onDismiss: () -> Unit) {
     AlertDialog(
         onDismissRequest = onDismiss,
         text = {
-            AsyncImage(
-                model = photoUri,
-                contentDescription = "Selected photo",
-                modifier = Modifier.fillMaxWidth(),
-                contentScale = ContentScale.Fit
-            )
+            if (mediaItem.type == MediaType.PHOTO) {
+                AsyncImage(
+                    model = mediaItem.uri,
+                    contentDescription = "Selected photo",
+                    modifier = Modifier.fillMaxWidth(),
+                    contentScale = ContentScale.Fit
+                )
+            } else {
+                FullscreenVideoPlayer(videoUri = mediaItem.uri)
+            }
         },
         confirmButton = {
             TextButton(onClick = onDismiss) {
@@ -313,9 +375,42 @@ private fun FullscreenPhotoDialog(photoUri: Uri, onDismiss: () -> Unit) {
         },
         icon = {
             Icon(
-                imageVector = androidx.compose.material.icons.Icons.Default.Photo,
+                imageVector = if (mediaItem.type == MediaType.PHOTO) {
+                    androidx.compose.material.icons.Icons.Default.Photo
+                } else {
+                    androidx.compose.material.icons.Icons.Default.Videocam
+                },
                 contentDescription = null
             )
         }
     )
+}
+
+@Composable
+private fun FullscreenVideoPlayer(videoUri: Uri) {
+    AndroidView(
+        modifier = Modifier
+            .fillMaxWidth()
+            .size(280.dp),
+        factory = { context ->
+            VideoView(context).apply {
+                setVideoURI(videoUri)
+                val mediaController = MediaController(context)
+                mediaController.setAnchorView(this)
+                setMediaController(mediaController)
+                setOnPreparedListener { it.isLooping = true }
+                start()
+            }
+        },
+        update = { videoView ->
+            videoView.setVideoURI(videoUri)
+            videoView.start()
+        }
+    )
+
+    DisposableEffect(videoUri) {
+        onDispose {
+            // VideoView resources are released when detached from window.
+        }
+    }
 }

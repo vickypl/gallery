@@ -1,12 +1,12 @@
 # Custom Gallery App
 
-A Jetpack Compose Android app that implements a custom photo gallery experience.
+A Jetpack Compose Android app that implements a custom media gallery experience.
 
 ## Features
 
-- Loads only photos from device storage using `MediaStore.Images`.
-- Displays images in a date-sorted grid (newest first).
-- Opens a full-screen preview when a photo is tapped.
+- Loads photos and videos from device storage using `MediaStore.Images` and `MediaStore.Video`.
+- Displays media in a date-sorted grid (newest first).
+- Opens a full-screen preview when a media item is tapped.
 - Supports dynamic grid columns (2–6) with immediate UI updates.
 - Supports multi-selection with a visual selected state.
 - Handles Android 13+ and Android 12-and-below media permissions.
@@ -77,10 +77,10 @@ Choose one:
 
 The app will launch and request storage permission:
 
-- **Android 13+**: `READ_MEDIA_IMAGES`
+- **Android 13+**: `READ_MEDIA_IMAGES` + `READ_MEDIA_VIDEO`
 - **Android 12 and below**: `READ_EXTERNAL_STORAGE`
 
-Grant permission to load gallery photos.
+Grant permission to load gallery photos and videos.
 
 ---
 
