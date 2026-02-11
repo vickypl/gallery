@@ -18,7 +18,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -29,10 +29,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Icon
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
@@ -40,6 +40,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -56,10 +57,13 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewModelScope
 import coil.compose.AsyncImage
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
 
 enum class MediaType {
     PHOTO,
@@ -78,7 +82,9 @@ data class MediaItem(
 data class GalleryUiState(
     val mediaItems: List<MediaItem> = emptyList(),
     val gridColumns: Int = 3,
-    val selectedMediaIds: Set<String> = emptySet()
+    val selectedMediaIds: Set<String> = emptySet(),
+    val hasMoreItems: Boolean = true,
+    val isLoading: Boolean = false
 )
 
 data class MediaPermissionState(
@@ -91,13 +97,55 @@ class GalleryViewModel : ViewModel() {
     private val _uiState = MutableStateFlow(GalleryUiState())
     val uiState: StateFlow<GalleryUiState> = _uiState
 
-    fun loadMedia(context: Context, canReadImages: Boolean, canReadVideos: Boolean) {
-        val mediaItems = queryMedia(
-            context = context,
-            canReadImages = canReadImages,
-            canReadVideos = canReadVideos
-        )
-        _uiState.update { current -> current.copy(mediaItems = mediaItems) }
+    private val pageSize = 180
+    private var nextOffset = 0
+    private var lastCanReadImages = false
+    private var lastCanReadVideos = false
+
+    fun loadInitialMedia(context: Context, canReadImages: Boolean, canReadVideos: Boolean) {
+        lastCanReadImages = canReadImages
+        lastCanReadVideos = canReadVideos
+        nextOffset = 0
+        _uiState.update {
+            it.copy(
+                mediaItems = emptyList(),
+                hasMoreItems = true,
+                isLoading = false,
+                selectedMediaIds = emptySet()
+            )
+        }
+        loadNextPage(context = context)
+    }
+
+    fun loadNextPage(context: Context) {
+        val current = _uiState.value
+        if (current.isLoading || !current.hasMoreItems) {
+            return
+        }
+
+        _uiState.update { it.copy(isLoading = true) }
+
+        viewModelScope.launch(Dispatchers.IO) {
+            val page = queryMediaPage(
+                context = context,
+                canReadImages = lastCanReadImages,
+                canReadVideos = lastCanReadVideos,
+                limit = pageSize,
+                offset = nextOffset
+            )
+
+            val pageHasMore = page.size == pageSize
+            val newOffset = nextOffset + page.size
+            nextOffset = newOffset
+
+            _uiState.update {
+                it.copy(
+                    mediaItems = it.mediaItems + page,
+                    hasMoreItems = pageHasMore,
+                    isLoading = false
+                )
+            }
+        }
     }
 
     fun setGridColumns(columns: Int) {
@@ -114,69 +162,75 @@ class GalleryViewModel : ViewModel() {
         }
     }
 
-    private fun queryMedia(context: Context, canReadImages: Boolean, canReadVideos: Boolean): List<MediaItem> {
-        val photos = if (canReadImages) {
-            queryMediaByType(
-                context = context,
-                collection = MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-                idColumnName = MediaStore.Images.Media._ID,
-                dateAddedColumnName = MediaStore.Images.Media.DATE_ADDED,
-                dateModifiedColumnName = MediaStore.Images.Media.DATE_MODIFIED,
-                type = MediaType.PHOTO
-            )
-        } else {
-            emptyList()
-        }
-
-        val videos = if (canReadVideos) {
-            queryMediaByType(
-                context = context,
-                collection = MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
-                idColumnName = MediaStore.Video.Media._ID,
-                dateAddedColumnName = MediaStore.Video.Media.DATE_ADDED,
-                dateModifiedColumnName = MediaStore.Video.Media.DATE_MODIFIED,
-                type = MediaType.VIDEO
-            )
-        } else {
-            emptyList()
-        }
-
-        return (photos + videos).sortedByDescending { it.dateTakenOrModified }
-    }
-
-    private fun queryMediaByType(
+    private fun queryMediaPage(
         context: Context,
-        collection: Uri,
-        idColumnName: String,
-        dateAddedColumnName: String,
-        dateModifiedColumnName: String,
-        type: MediaType
+        canReadImages: Boolean,
+        canReadVideos: Boolean,
+        limit: Int,
+        offset: Int
     ): List<MediaItem> {
+        if (!canReadImages && !canReadVideos) {
+            return emptyList()
+        }
+
         val projection = arrayOf(
-            idColumnName,
-            dateAddedColumnName,
-            dateModifiedColumnName
+            MediaStore.Files.FileColumns._ID,
+            MediaStore.Files.FileColumns.MEDIA_TYPE,
+            MediaStore.Files.FileColumns.DATE_ADDED,
+            MediaStore.Files.FileColumns.DATE_MODIFIED
         )
 
-        val orderBy = "$dateModifiedColumnName DESC"
+        val mediaTypeFilters = buildList {
+            if (canReadImages) {
+                add(MediaStore.Files.FileColumns.MEDIA_TYPE_IMAGE)
+            }
+            if (canReadVideos) {
+                add(MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO)
+            }
+        }
+
+        val selection = mediaTypeFilters.joinToString(
+            prefix = "${MediaStore.Files.FileColumns.MEDIA_TYPE} IN (",
+            postfix = ")"
+        ) { "?" }
+        val selectionArgs = mediaTypeFilters.map { it.toString() }.toTypedArray()
+
+        val orderBy = "${MediaStore.Files.FileColumns.DATE_MODIFIED} DESC LIMIT $limit OFFSET $offset"
 
         val result = mutableListOf<MediaItem>()
+        val filesUri = MediaStore.Files.getContentUri("external")
+
         context.contentResolver.query(
-            collection,
+            filesUri,
             projection,
-            null,
-            null,
+            selection,
+            selectionArgs,
             orderBy
         )?.use { cursor ->
-            val idColumn = cursor.getColumnIndexOrThrow(idColumnName)
-            val addedColumn = cursor.getColumnIndexOrThrow(dateAddedColumnName)
-            val modifiedColumn = cursor.getColumnIndexOrThrow(dateModifiedColumnName)
+            val idColumn = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns._ID)
+            val mediaTypeColumn = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.MEDIA_TYPE)
+            val addedColumn = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.DATE_ADDED)
+            val modifiedColumn = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.DATE_MODIFIED)
 
             while (cursor.moveToNext()) {
                 val id = cursor.getLong(idColumn)
+                val mediaType = cursor.getInt(mediaTypeColumn)
                 val dateAdded = cursor.getLong(addedColumn)
                 val dateModified = cursor.getLong(modifiedColumn)
-                val uri = ContentUris.withAppendedId(collection, id)
+
+                val (contentUri, type) = when (mediaType) {
+                    MediaStore.Files.FileColumns.MEDIA_TYPE_IMAGE -> {
+                        MediaStore.Images.Media.EXTERNAL_CONTENT_URI to MediaType.PHOTO
+                    }
+
+                    MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO -> {
+                        MediaStore.Video.Media.EXTERNAL_CONTENT_URI to MediaType.VIDEO
+                    }
+
+                    else -> continue
+                }
+
+                val uri = ContentUris.withAppendedId(contentUri, id)
                 result.add(
                     MediaItem(
                         id = id,
@@ -283,7 +337,7 @@ private fun GalleryScreen(viewModel: GalleryViewModel) {
     ) {
         permissionState = getPermissionState()
         if (permissionState.hasAnyMediaAccess) {
-            viewModel.loadMedia(
+            viewModel.loadInitialMedia(
                 context = context,
                 canReadImages = permissionState.canReadImages,
                 canReadVideos = permissionState.canReadVideos
@@ -292,18 +346,19 @@ private fun GalleryScreen(viewModel: GalleryViewModel) {
     }
 
     if (permissionState.hasAnyMediaAccess) {
-        remember(permissionState) {
-            viewModel.loadMedia(
+        LaunchedEffect(permissionState) {
+            viewModel.loadInitialMedia(
                 context = context,
                 canReadImages = permissionState.canReadImages,
                 canReadVideos = permissionState.canReadVideos
             )
-            true
         }
+
         GalleryContent(
             state = state,
             onGridColumnChange = viewModel::setGridColumns,
-            onToggleSelection = viewModel::toggleSelection
+            onToggleSelection = viewModel::toggleSelection,
+            onLoadNextPage = { viewModel.loadNextPage(context) }
         )
     } else {
         PermissionView(onRequestPermission = { permissionLauncher.launch(permissions.toTypedArray()) })
@@ -331,7 +386,8 @@ private fun PermissionView(onRequestPermission: () -> Unit) {
 private fun GalleryContent(
     state: GalleryUiState,
     onGridColumnChange: (Int) -> Unit,
-    onToggleSelection: (String) -> Unit
+    onToggleSelection: (String) -> Unit,
+    onLoadNextPage: () -> Unit
 ) {
     var fullscreenMedia by remember { mutableStateOf<MediaItem?>(null) }
 
@@ -349,16 +405,28 @@ private fun GalleryContent(
             horizontalArrangement = Arrangement.spacedBy(4.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp)
         ) {
-            items(state.mediaItems, key = { it.stableId }) { item ->
+            itemsIndexed(state.mediaItems, key = { _, item -> item.stableId }) { index, item ->
                 val selected = state.selectedMediaIds.contains(item.stableId)
+
+                if (index >= state.mediaItems.lastIndex - 30) {
+                    LaunchedEffect(index, state.mediaItems.size, state.hasMoreItems, state.isLoading) {
+                        if (state.hasMoreItems && !state.isLoading) {
+                            onLoadNextPage()
+                        }
+                    }
+                }
+
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
                         .clip(MaterialTheme.shapes.small)
                         .background(MaterialTheme.colorScheme.surfaceVariant)
-                        .clickable {
-                            fullscreenMedia = item
-                        }
+                        .combinedClickable(
+                            onClick = {
+                                fullscreenMedia = item
+                            },
+                            onLongClick = { onToggleSelection(item.stableId) }
+                        )
                         .animateItemPlacement()
                 ) {
                     AsyncImage(
@@ -366,8 +434,7 @@ private fun GalleryContent(
                         contentDescription = null,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .size(140.dp)
-                            .clickable { onToggleSelection(item.stableId) },
+                            .size(140.dp),
                         contentScale = ContentScale.Crop
                     )
 
@@ -388,18 +455,30 @@ private fun GalleryContent(
                         }
                     }
 
-                    if (selected) {
-                        Box(
-                            modifier = Modifier
-                                .padding(8.dp)
-                                .size(22.dp)
-                                .clip(CircleShape)
-                                .background(Color(0xAA1E88E5))
-                                .align(Alignment.TopEnd),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text("✓", color = Color.White, fontWeight = FontWeight.Bold)
-                        }
+                    TextButton(
+                        onClick = { onToggleSelection(item.stableId) },
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(2.dp)
+                    ) {
+                        Text(
+                            text = if (selected) "✓" else "○",
+                            color = if (selected) Color(0xFF1E88E5) else Color.White,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+            }
+
+            if (state.isLoading) {
+                item(span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        CircularProgressIndicator()
                     }
                 }
             }
