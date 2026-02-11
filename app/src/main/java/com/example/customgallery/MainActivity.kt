@@ -28,9 +28,12 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.itemsIndexed
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
@@ -42,6 +45,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -60,6 +64,9 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import coil.compose.AsyncImage
+import coil.imageLoader
+import coil.request.ImageRequest
+import coil.size.Scale
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -415,7 +422,21 @@ private fun GalleryContent(
     onToggleSelection: (String) -> Unit,
     onLoadNextPage: () -> Unit
 ) {
-    var fullscreenMedia by remember { mutableStateOf<MediaItem?>(null) }
+    val context = LocalContext.current
+    var fullscreenIndex by remember { mutableStateOf<Int?>(null) }
+    val gridState = rememberLazyGridState()
+    val shouldLoadNextPage by remember(state.mediaItems.size, state.hasMoreItems, state.isLoading) {
+        derivedStateOf {
+            val lastVisibleIndex = gridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
+            state.hasMoreItems && !state.isLoading && lastVisibleIndex >= state.mediaItems.lastIndex - 24
+        }
+    }
+
+    LaunchedEffect(shouldLoadNextPage) {
+        if (shouldLoadNextPage) {
+            onLoadNextPage()
+        }
+    }
 
     Column(modifier = Modifier.fillMaxSize()) {
         GridControl(
@@ -425,21 +446,23 @@ private fun GalleryContent(
 
         LazyVerticalGrid(
             columns = GridCells.Fixed(state.gridColumns),
+            state = gridState,
             modifier = Modifier
                 .fillMaxSize()
                 .padding(4.dp),
             horizontalArrangement = Arrangement.spacedBy(4.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp)
         ) {
-            itemsIndexed(state.mediaItems, key = { _, item -> item.stableId }) { index, item ->
+            items(state.mediaItems, key = { item -> item.stableId }) { item ->
                 val selected = state.selectedMediaIds.contains(item.stableId)
-
-                if (index >= state.mediaItems.lastIndex - 30) {
-                    LaunchedEffect(index, state.mediaItems.size, state.hasMoreItems, state.isLoading) {
-                        if (state.hasMoreItems && !state.isLoading) {
-                            onLoadNextPage()
-                        }
-                    }
+                val thumbnailRequest = remember(item.uri) {
+                    ImageRequest.Builder(context)
+                        .data(item.uri)
+                        .size(320)
+                        .allowHardware(true)
+                        .crossfade(true)
+                        .scale(Scale.FILL)
+                        .build()
                 }
 
                 Box(
@@ -449,14 +472,16 @@ private fun GalleryContent(
                         .background(MaterialTheme.colorScheme.surfaceVariant)
                         .combinedClickable(
                             onClick = {
-                                fullscreenMedia = item
+                                fullscreenIndex = state.mediaItems.indexOfFirst { media ->
+                                    media.stableId == item.stableId
+                                }.takeIf { it >= 0 }
                             },
                             onLongClick = { onToggleSelection(item.stableId) }
                         )
                         .animateItemPlacement()
                 ) {
                     AsyncImage(
-                        model = item.uri,
+                        model = thumbnailRequest,
                         contentDescription = null,
                         modifier = Modifier
                             .fillMaxWidth()
@@ -524,10 +549,11 @@ private fun GalleryContent(
         }
     }
 
-    fullscreenMedia?.let { item ->
+    fullscreenIndex?.let { index ->
         FullscreenMediaDialog(
-            mediaItem = item,
-            onDismiss = { fullscreenMedia = null }
+            mediaItems = state.mediaItems,
+            initialIndex = index,
+            onDismiss = { fullscreenIndex = null }
         )
     }
 }
@@ -549,20 +575,62 @@ private fun GridControl(columns: Int, onGridColumnChange: (Int) -> Unit) {
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun FullscreenMediaDialog(mediaItem: MediaItem, onDismiss: () -> Unit) {
+private fun FullscreenMediaDialog(
+    mediaItems: List<MediaItem>,
+    initialIndex: Int,
+    onDismiss: () -> Unit
+) {
+    if (mediaItems.isEmpty()) {
+        return
+    }
+
+    val context = LocalContext.current
+    val pagerState = rememberPagerState(initialPage = initialIndex, pageCount = { mediaItems.size })
+
+    LaunchedEffect(pagerState.currentPage) {
+        val preloadTargets = listOfNotNull(
+            mediaItems.getOrNull(pagerState.currentPage - 1),
+            mediaItems.getOrNull(pagerState.currentPage + 1)
+        ).filter { it.type == MediaType.PHOTO }
+
+        preloadTargets.forEach { mediaItem ->
+            context.imageLoader.enqueue(
+                ImageRequest.Builder(context)
+                    .data(mediaItem.uri)
+                    .size(1_600)
+                    .allowHardware(true)
+                    .build()
+            )
+        }
+    }
+
     AlertDialog(
         onDismissRequest = onDismiss,
         text = {
-            if (mediaItem.type == MediaType.PHOTO) {
-                AsyncImage(
-                    model = mediaItem.uri,
-                    contentDescription = "Selected photo",
-                    modifier = Modifier.fillMaxWidth(),
-                    contentScale = ContentScale.Fit
-                )
-            } else {
-                FullscreenVideoPlayer(videoUri = mediaItem.uri)
+            HorizontalPager(
+                state = pagerState,
+                beyondBoundsPageCount = 1
+            ) { page ->
+                val mediaItem = mediaItems[page]
+                if (mediaItem.type == MediaType.PHOTO) {
+                    val fullscreenRequest = remember(mediaItem.uri) {
+                        ImageRequest.Builder(context)
+                            .data(mediaItem.uri)
+                            .allowHardware(true)
+                            .crossfade(true)
+                            .build()
+                    }
+                    AsyncImage(
+                        model = fullscreenRequest,
+                        contentDescription = "Selected photo",
+                        modifier = Modifier.fillMaxWidth(),
+                        contentScale = ContentScale.Fit
+                    )
+                } else {
+                    FullscreenVideoPlayer(videoUri = mediaItem.uri)
+                }
             }
         },
         confirmButton = {
@@ -572,7 +640,7 @@ private fun FullscreenMediaDialog(mediaItem: MediaItem, onDismiss: () -> Unit) {
         },
         icon = {
             Text(
-                text = if (mediaItem.type == MediaType.PHOTO) "📷" else "🎥"
+                text = "${pagerState.currentPage + 1}/${mediaItems.size}"
             )
         }
     )
