@@ -84,6 +84,24 @@ Grant permission to load gallery photos.
 
 ---
 
+## Team Workflow Requirement
+
+From now onward, after code updates we keep the latest generated APK in `gallery/apk`.
+
+Use:
+
+```bash
+./scripts/build_and_collect_apk.sh debug
+```
+
+(Or `release` instead of `debug`.) This script builds the app and copies the latest APK to:
+
+```text
+apk/gallery-debug-latest.apk
+```
+
+---
+
 ## Step-by-Step: Build APK for Testing
 
 You can build a **debug APK** (fastest for QA/testing) or a **release APK** (for distribution).
