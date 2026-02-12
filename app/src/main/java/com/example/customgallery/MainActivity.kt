@@ -74,7 +74,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -85,6 +87,7 @@ import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.ButtonDefaults
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModel
+import androidx.metrics.performance.JankStats
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import coil.ImageLoader
@@ -103,6 +106,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import kotlin.system.measureTimeMillis
 
 enum class MediaType {
     PHOTO,
@@ -154,6 +158,16 @@ data class MediaPermissionState(
     val hasAnyMediaAccess: Boolean
 )
 
+private data class MediaPageCursor(
+    val dateModified: Long,
+    val id: Long
+)
+
+private data class MediaPageResult(
+    val items: List<MediaItem>,
+    val nextCursor: MediaPageCursor?
+)
+
 class GalleryViewModel : ViewModel() {
     companion object {
         private const val TAG = "GalleryViewModel"
@@ -166,8 +180,8 @@ class GalleryViewModel : ViewModel() {
 
     private val pageSize = 180
     private val albumPageSize = 120
-    private var nextOffset = 0
-    private var albumNextOffset = 0
+    private var nextCursor: MediaPageCursor? = null
+    private var albumNextCursor: MediaPageCursor? = null
     private var lastCanReadImages = false
     private var lastCanReadVideos = false
     private var albumCache: List<AlbumInfo> = emptyList()
@@ -181,7 +195,7 @@ class GalleryViewModel : ViewModel() {
     fun loadInitialMedia(context: Context, canReadImages: Boolean, canReadVideos: Boolean) {
         lastCanReadImages = canReadImages
         lastCanReadVideos = canReadVideos
-        nextOffset = 0
+        nextCursor = null
         _uiState.update {
             it.copy(
                 mediaItems = emptyList(),
@@ -205,11 +219,16 @@ class GalleryViewModel : ViewModel() {
         _albumsUiState.update { it.copy(isAlbumsLoading = true) }
         viewModelScope.launch(Dispatchers.IO) {
             runCatching {
-                queryAlbumsInternal(
-                    context = context,
-                    canReadImages = lastCanReadImages,
-                    canReadVideos = lastCanReadVideos
-                )
+                var albums = emptyList<AlbumInfo>()
+                val queryDurationMs = measureTimeMillis {
+                    albums = queryAlbumsInternal(
+                        context = context,
+                        canReadImages = lastCanReadImages,
+                        canReadVideos = lastCanReadVideos
+                    )
+                }
+                Log.d(TAG, "loadAlbums() fetched ${albums.size} albums in ${queryDurationMs}ms")
+                albums
             }.onSuccess { albums ->
                 albumCache = albums
                 _albumsUiState.update { it.copy(albums = albums, isAlbumsLoading = false) }
@@ -221,7 +240,7 @@ class GalleryViewModel : ViewModel() {
     }
 
     fun openAlbum(context: Context, bucketId: Long) {
-        albumNextOffset = 0
+        albumNextCursor = null
         _albumsUiState.update {
             it.copy(
                 selectedAlbumId = bucketId,
@@ -241,20 +260,25 @@ class GalleryViewModel : ViewModel() {
         _albumsUiState.update { it.copy(isAlbumItemsLoading = true) }
         viewModelScope.launch(Dispatchers.IO) {
             runCatching {
-                queryMediaPage(
-                    context = context,
-                    canReadImages = lastCanReadImages,
-                    canReadVideos = lastCanReadVideos,
-                    limit = albumPageSize,
-                    offset = albumNextOffset,
-                    bucketId = selectedId
-                )
+                var page = MediaPageResult(emptyList(), null)
+                val queryDurationMs = measureTimeMillis {
+                    page = queryMediaPage(
+                        context = context,
+                        canReadImages = lastCanReadImages,
+                        canReadVideos = lastCanReadVideos,
+                        limit = albumPageSize,
+                        afterCursor = albumNextCursor,
+                        bucketId = selectedId
+                    )
+                }
+                Log.d(TAG, "loadNextAlbumPage() fetched ${page.items.size} items in ${queryDurationMs}ms")
+                page
             }.onSuccess { page ->
-                albumNextOffset += page.size
+                albumNextCursor = page.nextCursor
                 _albumsUiState.update {
                     it.copy(
-                        albumItems = it.albumItems + page,
-                        hasMoreAlbumItems = page.size == albumPageSize,
+                        albumItems = it.albumItems + page.items,
+                        hasMoreAlbumItems = page.items.size == albumPageSize,
                         isAlbumItemsLoading = false
                     )
                 }
@@ -286,21 +310,24 @@ class GalleryViewModel : ViewModel() {
 
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                val page = queryMediaPage(
-                    context = context,
-                    canReadImages = lastCanReadImages,
-                    canReadVideos = lastCanReadVideos,
-                    limit = pageSize,
-                    offset = nextOffset
-                )
+                var page = MediaPageResult(emptyList(), null)
+                val queryDurationMs = measureTimeMillis {
+                    page = queryMediaPage(
+                        context = context,
+                        canReadImages = lastCanReadImages,
+                        canReadVideos = lastCanReadVideos,
+                        limit = pageSize,
+                        afterCursor = nextCursor
+                    )
+                }
+                Log.d(TAG, "loadNextPage() fetched ${page.items.size} items in ${queryDurationMs}ms")
 
-                val pageHasMore = page.size == pageSize
-                val newOffset = nextOffset + page.size
-                nextOffset = newOffset
+                val pageHasMore = page.items.size == pageSize
+                nextCursor = page.nextCursor
 
                 _uiState.update {
                     it.copy(
-                        mediaItems = it.mediaItems + page,
+                        mediaItems = it.mediaItems + page.items,
                         hasMoreItems = pageHasMore,
                         isLoading = false
                     )
@@ -344,17 +371,16 @@ class GalleryViewModel : ViewModel() {
         canReadImages: Boolean,
         canReadVideos: Boolean,
         limit: Int,
-        offset: Int,
+        afterCursor: MediaPageCursor?,
         bucketId: Long? = null
-    ): List<MediaItem> {
+    ): MediaPageResult {
         if (!canReadImages && !canReadVideos) {
-            return emptyList()
+            return MediaPageResult(emptyList(), null)
         }
 
         val projection = arrayOf(
             MediaStore.Files.FileColumns._ID,
             MediaStore.Files.FileColumns.MEDIA_TYPE,
-            MediaStore.Files.FileColumns.DATE_ADDED,
             MediaStore.Files.FileColumns.DATE_MODIFIED
         )
 
@@ -378,15 +404,21 @@ class GalleryViewModel : ViewModel() {
             clauses += "${MediaStore.Files.FileColumns.BUCKET_ID} = ?"
             selectionArgsList += bucketId.toString()
         }
+        if (afterCursor != null) {
+            clauses += "(${MediaStore.Files.FileColumns.DATE_MODIFIED} < ? OR (${MediaStore.Files.FileColumns.DATE_MODIFIED} = ? AND ${MediaStore.Files.FileColumns._ID} < ?))"
+            selectionArgsList += afterCursor.dateModified.toString()
+            selectionArgsList += afterCursor.dateModified.toString()
+            selectionArgsList += afterCursor.id.toString()
+        }
         val selection = clauses.joinToString(" AND ")
         val selectionArgs = selectionArgsList.toTypedArray()
 
-        val sortOrder = "${MediaStore.Files.FileColumns.DATE_MODIFIED} DESC"
+        val sortOrder = "${MediaStore.Files.FileColumns.DATE_MODIFIED} DESC, ${MediaStore.Files.FileColumns._ID} DESC"
         val queryArgs = Bundle().apply {
             putString(android.content.ContentResolver.QUERY_ARG_SQL_SELECTION, selection)
             putStringArray(android.content.ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS, selectionArgs)
             putString(android.content.ContentResolver.QUERY_ARG_SQL_SORT_ORDER, sortOrder)
-            putString(android.content.ContentResolver.QUERY_ARG_SQL_LIMIT, if (limit == Int.MAX_VALUE) null else "$limit OFFSET $offset")
+            putString(android.content.ContentResolver.QUERY_ARG_SQL_LIMIT, if (limit == Int.MAX_VALUE) null else "$limit")
         }
 
         val result = mutableListOf<MediaItem>()
@@ -401,20 +433,18 @@ class GalleryViewModel : ViewModel() {
                 projection,
                 selection,
                 selectionArgs,
-                if (limit == Int.MAX_VALUE) sortOrder else "$sortOrder LIMIT $limit OFFSET $offset"
+                if (limit == Int.MAX_VALUE) sortOrder else "$sortOrder LIMIT $limit"
             )
         }
 
         cursor?.use { cursor ->
             val idColumn = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns._ID)
             val mediaTypeColumn = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.MEDIA_TYPE)
-            val addedColumn = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.DATE_ADDED)
             val modifiedColumn = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.DATE_MODIFIED)
 
             while (cursor.moveToNext()) {
                 val id = cursor.getLong(idColumn)
                 val mediaType = cursor.getInt(mediaTypeColumn)
-                val dateAdded = cursor.getLong(addedColumn)
                 val dateModified = cursor.getLong(modifiedColumn)
 
                 val (contentUri, type) = when (mediaType) {
@@ -434,14 +464,15 @@ class GalleryViewModel : ViewModel() {
                     MediaItem(
                         id = id,
                         uri = uri,
-                        dateTakenOrModified = maxOf(dateAdded, dateModified),
+                        dateTakenOrModified = dateModified,
                         type = type
                     )
                 )
             }
         }
 
-        return result
+        val newCursor = result.lastOrNull()?.let { MediaPageCursor(dateModified = it.dateTakenOrModified, id = it.id) }
+        return MediaPageResult(items = result, nextCursor = newCursor)
     }
 
     private fun queryAlbumsInternal(
@@ -512,9 +543,15 @@ class GalleryViewModel : ViewModel() {
 
 class MainActivity : ComponentActivity() {
     private val viewModel by viewModels<GalleryViewModel>()
+    private var jankStats: JankStats? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        jankStats = JankStats.createAndTrack(window) { frameData ->
+            if (frameData.isJank) {
+                Log.w("JankStats", "Janky frame: durationUiNanos=${frameData.frameDurationUiNanos}")
+            }
+        }
         enableEdgeToEdge()
         setContent {
             MaterialTheme {
@@ -523,6 +560,11 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    override fun onDestroy() {
+        jankStats = null
+        super.onDestroy()
     }
 }
 
@@ -737,15 +779,27 @@ private fun GalleryGridContent(
     val context = LocalContext.current
     var previewMediaId by remember { mutableStateOf<String?>(null) }
     val gridState = rememberLazyGridState()
+    val density = LocalDensity.current
+    val screenWidth = LocalConfiguration.current.screenWidthDp.dp
+    val gridSpacing = 4.dp
+    val horizontalPadding = 8.dp
+    val thumbnailSizePx = remember(state.gridColumns, screenWidth, density) {
+        with(density) {
+            (((screenWidth - horizontalPadding - (gridSpacing * (state.gridColumns - 1))) / state.gridColumns).coerceAtLeast(64.dp)).roundToPx()
+        }
+    }
     val shouldLoadNextPage by remember(state.mediaItems.size, state.hasMoreItems, state.isLoading) {
         derivedStateOf {
             val lastVisibleIndex = gridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
             state.hasMoreItems && !state.isLoading && lastVisibleIndex >= state.mediaItems.lastIndex - 24
         }
     }
-    val selectedMediaItems by remember(state.selectedMediaIds, state.mediaItems) {
+    val mediaById by remember(state.mediaItems) {
+        derivedStateOf { state.mediaItems.associateBy { it.stableId } }
+    }
+    val selectedMediaItems by remember(state.selectedMediaIds, mediaById) {
         derivedStateOf {
-            state.mediaItems.filter { item -> state.selectedMediaIds.contains(item.stableId) }
+            state.selectedMediaIds.mapNotNull { stableId -> mediaById[stableId] }
         }
     }
 
@@ -790,7 +844,7 @@ private fun GalleryGridContent(
                 val thumbnailRequest = remember(item.uri) {
                     ImageRequest.Builder(context)
                         .data(item.uri)
-                        .size(320)
+                        .size(thumbnailSizePx)
                         .allowHardware(true)
                         .crossfade(false)
                         .scale(Scale.FILL)
@@ -994,15 +1048,23 @@ private fun GalleryRootContent(
     val imageLoader = rememberGalleryImageLoader(context)
 
     DisposableEffect(albumsState.selectedAlbumId) {
-        val observer = object : ContentObserver(Handler(Looper.getMainLooper())) {
+        val mainHandler = Handler(Looper.getMainLooper())
+        val refreshRunnable = Runnable {
+            onRefreshMedia()
+            onLoadAlbums(true)
+            albumsState.selectedAlbumId?.let { onOpenAlbum(it) }
+        }
+        val observer = object : ContentObserver(mainHandler) {
             override fun onChange(selfChange: Boolean) {
-                onRefreshMedia()
-                onLoadAlbums(true)
-                albumsState.selectedAlbumId?.let { onOpenAlbum(it) }
+                mainHandler.removeCallbacks(refreshRunnable)
+                mainHandler.postDelayed(refreshRunnable, 500L)
             }
         }
         context.contentResolver.registerContentObserver(MediaStore.Files.getContentUri("external"), true, observer)
-        onDispose { context.contentResolver.unregisterContentObserver(observer) }
+        onDispose {
+            mainHandler.removeCallbacks(refreshRunnable)
+            context.contentResolver.unregisterContentObserver(observer)
+        }
     }
 
     LaunchedEffect(mode) {
@@ -1120,6 +1182,15 @@ private fun AlbumMediaContent(
 ) {
     var previewMediaId by remember { mutableStateOf<String?>(null) }
     val gridState = rememberLazyGridState()
+    val density = LocalDensity.current
+    val screenWidth = LocalConfiguration.current.screenWidthDp.dp
+    val gridSpacing = 4.dp
+    val horizontalPadding = 8.dp
+    val thumbnailSizePx = remember(screenWidth, density) {
+        with(density) {
+            (((screenWidth - horizontalPadding - (gridSpacing * 2)) / 3).coerceAtLeast(64.dp)).roundToPx()
+        }
+    }
     val shouldLoadNextPage by remember(items.size, hasMoreItems, isLoading) {
         derivedStateOf {
             val lastVisible = gridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
@@ -1149,7 +1220,7 @@ private fun AlbumMediaContent(
                 AsyncImage(
                     model = ImageRequest.Builder(LocalContext.current)
                         .data(item.uri)
-                        .size(320)
+                        .size(thumbnailSizePx)
                         .precision(Precision.INEXACT)
                         .memoryCachePolicy(CachePolicy.ENABLED)
                         .diskCachePolicy(CachePolicy.ENABLED)
@@ -1214,10 +1285,18 @@ private fun FullscreenMediaViewer(
     }
 
     val context = LocalContext.current
-    val pagerState = rememberPagerState(initialPage = initialIndex, pageCount = { mediaItems.size })
+    val safeInitialIndex = initialIndex.coerceIn(0, mediaItems.lastIndex)
+    val pagerState = rememberPagerState(initialPage = safeInitialIndex, pageCount = { mediaItems.size })
     val currentItem = mediaItems.getOrNull(pagerState.currentPage)
 
     BackHandler(onBack = onDismiss)
+
+    LaunchedEffect(mediaItems.size) {
+        val lastIndex = mediaItems.lastIndex
+        if (pagerState.currentPage > lastIndex && lastIndex >= 0) {
+            pagerState.scrollToPage(lastIndex)
+        }
+    }
 
     LaunchedEffect(pagerState.currentPage) {
         val preloadTargets = listOfNotNull(
@@ -1269,13 +1348,24 @@ private fun FullscreenMediaViewer(
                 }
             }
 
-            Text(
-                text = "${pagerState.currentPage + 1}/${mediaItems.size}",
-                color = Color.White,
+            Row(
                 modifier = Modifier
                     .align(Alignment.TopCenter)
-                    .padding(top = 16.dp)
-            )
+                    .fillMaxWidth()
+                    .padding(start = 12.dp, end = 12.dp, top = 10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                TextButton(onClick = onDismiss) {
+                    Text("Close", color = Color.White)
+                }
+                Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.Center) {
+                    Text(
+                        text = "${pagerState.currentPage + 1}/${mediaItems.size}",
+                        color = Color.White
+                    )
+                }
+                Box(modifier = Modifier.size(68.dp))
+            }
 
             if (currentItem != null) {
                 Row(
@@ -1287,8 +1377,8 @@ private fun FullscreenMediaViewer(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
-                        IconButton(onClick = { onShare(currentItem) }) {
-                            Icon(imageVector = Icons.Default.Share, contentDescription = "Share", tint = Color.White)
+                        IconButton(onClick = { onDelete(currentItem) }) {
+                            Icon(imageVector = Icons.Default.Delete, contentDescription = "Delete", tint = Color.White)
                         }
                     }
                     Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.Center) {
@@ -1300,8 +1390,8 @@ private fun FullscreenMediaViewer(
                         }
                     }
                     Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.CenterEnd) {
-                        IconButton(onClick = { onDelete(currentItem) }) {
-                            Icon(imageVector = Icons.Default.Delete, contentDescription = "Delete", tint = Color.White)
+                        IconButton(onClick = { onShare(currentItem) }) {
+                            Icon(imageVector = Icons.Default.Share, contentDescription = "Share", tint = Color.White)
                         }
                     }
                 }
@@ -1318,6 +1408,7 @@ private fun FullscreenVideoPlayer(videoUri: Uri) {
         factory = { context ->
             VideoView(context).apply {
                 setVideoURI(videoUri)
+                tag = videoUri
                 val mediaController = MediaController(context)
                 mediaController.setAnchorView(this)
                 setMediaController(mediaController)
@@ -1326,8 +1417,14 @@ private fun FullscreenVideoPlayer(videoUri: Uri) {
             }
         },
         update = { videoView ->
-            videoView.setVideoURI(videoUri)
-            videoView.start()
+            val currentTag = videoView.tag as? Uri
+            if (currentTag != videoUri) {
+                videoView.setVideoURI(videoUri)
+                videoView.tag = videoUri
+            }
+            if (!videoView.isPlaying) {
+                videoView.start()
+            }
         }
     )
 
