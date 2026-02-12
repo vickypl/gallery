@@ -6,9 +6,13 @@ import android.content.ContentUris
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.database.ContentObserver
 import android.net.Uri
 import android.os.Bundle
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import android.os.StatFs
 import android.provider.MediaStore
 import android.util.Log
 import android.widget.MediaController
@@ -24,25 +28,34 @@ import androidx.activity.viewModels
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.Button
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -66,14 +79,20 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material3.ButtonDefaults
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
+import coil.ImageLoader
 import coil.compose.AsyncImage
-import coil.imageLoader
+import coil.disk.DiskCache
+import coil.memory.MemoryCache
+import coil.request.CachePolicy
 import coil.request.ImageRequest
+import coil.size.Precision
 import coil.size.Scale
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
@@ -82,6 +101,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 
 enum class MediaType {
     PHOTO,
@@ -105,6 +125,19 @@ data class GalleryUiState(
     val isLoading: Boolean = false
 )
 
+enum class GalleryScreenMode {
+    GRID,
+    ALBUMS,
+    ALBUM_CONTENT
+}
+
+data class AlbumInfo(
+    val bucketId: Long,
+    val name: String,
+    val itemCount: Int,
+    val coverUri: Uri
+)
+
 data class MediaPermissionState(
     val canReadImages: Boolean,
     val canReadVideos: Boolean,
@@ -123,6 +156,25 @@ class GalleryViewModel : ViewModel() {
     private var nextOffset = 0
     private var lastCanReadImages = false
     private var lastCanReadVideos = false
+
+    fun refreshMedia(context: Context) {
+        loadInitialMedia(context, lastCanReadImages, lastCanReadVideos)
+    }
+
+    fun queryAlbums(context: Context): List<AlbumInfo> = queryAlbumsInternal(
+        context = context,
+        canReadImages = lastCanReadImages,
+        canReadVideos = lastCanReadVideos
+    )
+
+    fun queryAlbumMedia(context: Context, bucketId: Long): List<MediaItem> = queryMediaPage(
+        context = context,
+        canReadImages = lastCanReadImages,
+        canReadVideos = lastCanReadVideos,
+        limit = Int.MAX_VALUE,
+        offset = 0,
+        bucketId = bucketId
+    )
 
     fun loadInitialMedia(context: Context, canReadImages: Boolean, canReadVideos: Boolean) {
         lastCanReadImages = canReadImages
@@ -207,7 +259,8 @@ class GalleryViewModel : ViewModel() {
         canReadImages: Boolean,
         canReadVideos: Boolean,
         limit: Int,
-        offset: Int
+        offset: Int,
+        bucketId: Long? = null
     ): List<MediaItem> {
         if (!canReadImages && !canReadVideos) {
             return emptyList()
@@ -229,18 +282,26 @@ class GalleryViewModel : ViewModel() {
             }
         }
 
-        val selection = mediaTypeFilters.joinToString(
-            prefix = "${MediaStore.Files.FileColumns.MEDIA_TYPE} IN (",
-            postfix = ")"
-        ) { "?" }
-        val selectionArgs = mediaTypeFilters.map { it.toString() }.toTypedArray()
+        val clauses = mutableListOf(
+            mediaTypeFilters.joinToString(
+                prefix = "${MediaStore.Files.FileColumns.MEDIA_TYPE} IN (",
+                postfix = ")"
+            ) { "?" }
+        )
+        val selectionArgsList = mediaTypeFilters.map { it.toString() }.toMutableList()
+        if (bucketId != null) {
+            clauses += "${MediaStore.Files.FileColumns.BUCKET_ID} = ?"
+            selectionArgsList += bucketId.toString()
+        }
+        val selection = clauses.joinToString(" AND ")
+        val selectionArgs = selectionArgsList.toTypedArray()
 
         val sortOrder = "${MediaStore.Files.FileColumns.DATE_MODIFIED} DESC"
         val queryArgs = Bundle().apply {
             putString(android.content.ContentResolver.QUERY_ARG_SQL_SELECTION, selection)
             putStringArray(android.content.ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS, selectionArgs)
             putString(android.content.ContentResolver.QUERY_ARG_SQL_SORT_ORDER, sortOrder)
-            putString(android.content.ContentResolver.QUERY_ARG_SQL_LIMIT, "$limit OFFSET $offset")
+            putString(android.content.ContentResolver.QUERY_ARG_SQL_LIMIT, if (limit == Int.MAX_VALUE) null else "$limit OFFSET $offset")
         }
 
         val result = mutableListOf<MediaItem>()
@@ -255,7 +316,7 @@ class GalleryViewModel : ViewModel() {
                 projection,
                 selection,
                 selectionArgs,
-                "$sortOrder LIMIT $limit OFFSET $offset"
+                if (limit == Int.MAX_VALUE) sortOrder else "$sortOrder LIMIT $limit OFFSET $offset"
             )
         }
 
@@ -297,6 +358,71 @@ class GalleryViewModel : ViewModel() {
 
         return result
     }
+
+    private fun queryAlbumsInternal(
+        context: Context,
+        canReadImages: Boolean,
+        canReadVideos: Boolean
+    ): List<AlbumInfo> {
+        if (!canReadImages && !canReadVideos) return emptyList()
+
+        val projection = arrayOf(
+            MediaStore.Files.FileColumns.BUCKET_ID,
+            MediaStore.Files.FileColumns.BUCKET_DISPLAY_NAME,
+            MediaStore.Files.FileColumns._ID,
+            MediaStore.Files.FileColumns.MEDIA_TYPE,
+            MediaStore.Files.FileColumns.DATE_MODIFIED
+        )
+
+        val mediaTypeFilters = buildList {
+            if (canReadImages) add(MediaStore.Files.FileColumns.MEDIA_TYPE_IMAGE)
+            if (canReadVideos) add(MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO)
+        }
+
+        val selection = mediaTypeFilters.joinToString(
+            prefix = "${MediaStore.Files.FileColumns.MEDIA_TYPE} IN (",
+            postfix = ")"
+        ) { "?" }
+
+        val buckets = linkedMapOf<Long, Triple<String, Int, MediaItem?>>()
+        context.contentResolver.query(
+            MediaStore.Files.getContentUri("external"),
+            projection,
+            selection,
+            mediaTypeFilters.map { it.toString() }.toTypedArray(),
+            "${MediaStore.Files.FileColumns.DATE_MODIFIED} DESC"
+        )?.use { cursor ->
+            val bucketIdColumn = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.BUCKET_ID)
+            val bucketNameColumn = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.BUCKET_DISPLAY_NAME)
+            val idColumn = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns._ID)
+            val mediaTypeColumn = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.MEDIA_TYPE)
+            while (cursor.moveToNext()) {
+                val bucketId = cursor.getLong(bucketIdColumn)
+                if (bucketId == 0L) continue
+                val bucketName = cursor.getString(bucketNameColumn) ?: "Unknown"
+                val mediaId = cursor.getLong(idColumn)
+                val mediaType = cursor.getInt(mediaTypeColumn)
+                val (contentUri, type) = when (mediaType) {
+                    MediaStore.Files.FileColumns.MEDIA_TYPE_IMAGE -> MediaStore.Images.Media.EXTERNAL_CONTENT_URI to MediaType.PHOTO
+                    MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO -> MediaStore.Video.Media.EXTERNAL_CONTENT_URI to MediaType.VIDEO
+                    else -> continue
+                }
+                val mediaItem = MediaItem(mediaId, ContentUris.withAppendedId(contentUri, mediaId), 0L, type)
+                val current = buckets[bucketId]
+                if (current == null) {
+                    buckets[bucketId] = Triple(bucketName, 1, mediaItem)
+                } else {
+                    buckets[bucketId] = Triple(current.first, current.second + 1, current.third ?: mediaItem)
+                }
+            }
+        }
+
+        return buckets.mapNotNull { (bucketId, triple) ->
+            val cover = triple.third ?: return@mapNotNull null
+            AlbumInfo(bucketId = bucketId, name = triple.first, itemCount = triple.second, coverUri = cover.uri)
+        }.sortedByDescending { it.itemCount }
+    }
+
 }
 
 class MainActivity : ComponentActivity() {
@@ -475,13 +601,16 @@ private fun GalleryScreen(viewModel: GalleryViewModel) {
             )
         }
 
-        GalleryContent(
+        GalleryRootContent(
             state = state,
             onGridColumnChange = viewModel::setGridColumns,
             onToggleSelection = viewModel::toggleSelection,
             onLoadNextPage = { viewModel.loadNextPage(context) },
             onShareMedia = ::shareMediaItems,
-            onDeleteMedia = ::requestDelete
+            onDeleteMedia = ::requestDelete,
+            onRefreshMedia = { viewModel.refreshMedia(context) },
+            queryAlbums = { viewModel.queryAlbums(context) },
+            queryAlbumMedia = { bucketId -> viewModel.queryAlbumMedia(context, bucketId) }
         )
     } else {
         PermissionView(onRequestPermission = { permissionLauncher.launch(permissions.toTypedArray()) })
@@ -506,13 +635,14 @@ private fun PermissionView(onRequestPermission: () -> Unit) {
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun GalleryContent(
+private fun GalleryGridContent(
     state: GalleryUiState,
     onGridColumnChange: (Int) -> Unit,
     onToggleSelection: (String) -> Unit,
     onLoadNextPage: () -> Unit,
     onShareMedia: (List<MediaItem>) -> Unit,
-    onDeleteMedia: (List<MediaItem>) -> Unit
+    onDeleteMedia: (List<MediaItem>) -> Unit,
+    imageLoader: ImageLoader
 ) {
     val context = LocalContext.current
     var fullscreenIndex by remember { mutableStateOf<Int?>(null) }
@@ -574,6 +704,9 @@ private fun GalleryContent(
                         .allowHardware(true)
                         .crossfade(false)
                         .scale(Scale.FILL)
+                        .precision(Precision.INEXACT)
+                        .memoryCachePolicy(CachePolicy.ENABLED)
+                        .diskCachePolicy(CachePolicy.ENABLED)
                         .build()
                 }
 
@@ -592,6 +725,7 @@ private fun GalleryContent(
                 ) {
                     AsyncImage(
                         model = thumbnailRequest,
+                        imageLoader = imageLoader,
                         contentDescription = null,
                         modifier = Modifier
                             .fillMaxWidth()
@@ -665,7 +799,8 @@ private fun GalleryContent(
             initialIndex = index,
             onDismiss = { fullscreenIndex = null },
             onShare = { currentItem -> onShareMedia(listOf(currentItem)) },
-            onDelete = { currentItem -> onDeleteMedia(listOf(currentItem)) }
+            onDelete = { currentItem -> onDeleteMedia(listOf(currentItem)) },
+            imageLoader = imageLoader
         )
     }
 }
@@ -713,6 +848,203 @@ private fun GridControl(columns: Int, onGridColumnChange: (Int) -> Unit) {
     }
 }
 
+
+@Composable
+private fun rememberGalleryImageLoader(context: Context): ImageLoader {
+    val appContext = context.applicationContext
+    return remember(appContext) {
+        val diskDirectory = File(appContext.cacheDir, "gallery_thumbs")
+        val maxDiskSize = (StatFs(appContext.cacheDir.absolutePath).totalBytes * 0.05).toLong().coerceAtLeast(64L * 1024 * 1024)
+        ImageLoader.Builder(appContext)
+            .memoryCache {
+                MemoryCache.Builder(appContext)
+                    .maxSizePercent(0.25)
+                    .build()
+            }
+            .diskCache {
+                DiskCache.Builder()
+                    .directory(diskDirectory)
+                    .maxSizeBytes(maxDiskSize)
+                    .build()
+            }
+            .crossfade(false)
+            .build()
+    }
+}
+
+@Composable
+private fun GalleryRootContent(
+    state: GalleryUiState,
+    onGridColumnChange: (Int) -> Unit,
+    onToggleSelection: (String) -> Unit,
+    onLoadNextPage: () -> Unit,
+    onShareMedia: (List<MediaItem>) -> Unit,
+    onDeleteMedia: (List<MediaItem>) -> Unit,
+    onRefreshMedia: () -> Unit,
+    queryAlbums: () -> List<AlbumInfo>,
+    queryAlbumMedia: (Long) -> List<MediaItem>
+) {
+    val context = LocalContext.current
+    var mode by remember { mutableStateOf(GalleryScreenMode.GRID) }
+    var selectedAlbum by remember { mutableStateOf<AlbumInfo?>(null) }
+    var albums by remember { mutableStateOf(emptyList<AlbumInfo>()) }
+    var albumItems by remember { mutableStateOf(emptyList<MediaItem>()) }
+    val imageLoader = rememberGalleryImageLoader(context)
+
+    DisposableEffect(Unit) {
+        val observer = object : ContentObserver(Handler(Looper.getMainLooper())) {
+            override fun onChange(selfChange: Boolean) {
+                onRefreshMedia()
+                albums = queryAlbums()
+                selectedAlbum?.let { albumItems = queryAlbumMedia(it.bucketId) }
+            }
+        }
+        context.contentResolver.registerContentObserver(MediaStore.Files.getContentUri("external"), true, observer)
+        onDispose { context.contentResolver.unregisterContentObserver(observer) }
+    }
+
+    LaunchedEffect(mode, state.mediaItems.size) {
+        if (mode == GalleryScreenMode.ALBUMS || mode == GalleryScreenMode.ALBUM_CONTENT) {
+            albums = queryAlbums()
+        }
+        if (mode == GalleryScreenMode.ALBUM_CONTENT) {
+            selectedAlbum?.let { albumItems = queryAlbumMedia(it.bucketId) }
+        }
+    }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        when (mode) {
+            GalleryScreenMode.GRID -> GalleryGridContent(
+                state = state,
+                onGridColumnChange = onGridColumnChange,
+                onToggleSelection = onToggleSelection,
+                onLoadNextPage = onLoadNextPage,
+                onShareMedia = onShareMedia,
+                onDeleteMedia = onDeleteMedia,
+                imageLoader = imageLoader
+            )
+            GalleryScreenMode.ALBUMS -> AlbumListContent(
+                albums = albums,
+                imageLoader = imageLoader,
+                onAlbumOpen = { album ->
+                    selectedAlbum = album
+                    albumItems = queryAlbumMedia(album.bucketId)
+                    mode = GalleryScreenMode.ALBUM_CONTENT
+                }
+            )
+            GalleryScreenMode.ALBUM_CONTENT -> AlbumMediaContent(
+                title = selectedAlbum?.name.orEmpty(),
+                items = albumItems,
+                imageLoader = imageLoader,
+                onBack = { mode = GalleryScreenMode.ALBUMS },
+                onShareMedia = onShareMedia,
+                onDeleteMedia = onDeleteMedia
+            )
+        }
+
+        NavigationBar(modifier = Modifier.navigationBarsPadding()) {
+            NavigationBarItem(selected = mode == GalleryScreenMode.GRID, onClick = { mode = GalleryScreenMode.GRID }, icon = { Icon(Icons.Default.Share, contentDescription = "Media") }, label = { Text("Media") })
+            NavigationBarItem(selected = mode != GalleryScreenMode.GRID, onClick = { mode = GalleryScreenMode.ALBUMS }, icon = { Icon(Icons.Default.Folder, contentDescription = "Albums") }, label = { Text("Albums") })
+            NavigationBarItem(selected = false, onClick = { }, enabled = false, icon = { Icon(Icons.Default.Delete, contentDescription = "Delete") }, label = { Text("Delete") })
+        }
+    }
+}
+
+@Composable
+private fun AlbumListContent(albums: List<AlbumInfo>, imageLoader: ImageLoader, onAlbumOpen: (AlbumInfo) -> Unit) {
+    LazyColumn(contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxSize()) {
+        items(albums, key = { it.bucketId }) { album ->
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(MaterialTheme.shapes.medium)
+                    .background(MaterialTheme.colorScheme.surfaceVariant)
+                    .clickable { onAlbumOpen(album) }
+                    .padding(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                AsyncImage(
+                    model = ImageRequest.Builder(LocalContext.current)
+                        .data(album.coverUri)
+                        .size(240)
+                        .precision(Precision.INEXACT)
+                        .memoryCachePolicy(CachePolicy.ENABLED)
+                        .diskCachePolicy(CachePolicy.ENABLED)
+                        .build(),
+                    imageLoader = imageLoader,
+                    contentDescription = album.name,
+                    modifier = Modifier.size(64.dp),
+                    contentScale = ContentScale.Crop
+                )
+                Column {
+                    Text(album.name, fontWeight = FontWeight.SemiBold)
+                    Text("${album.itemCount} items")
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun AlbumMediaContent(
+    title: String,
+    items: List<MediaItem>,
+    imageLoader: ImageLoader,
+    onBack: () -> Unit,
+    onShareMedia: (List<MediaItem>) -> Unit,
+    onDeleteMedia: (List<MediaItem>) -> Unit
+) {
+    var fullscreenIndex by remember { mutableStateOf<Int?>(null) }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        Row(modifier = Modifier.fillMaxWidth().padding(12.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            Text(title, fontWeight = FontWeight.Bold)
+            TextButton(onClick = onBack) { Text("Back") }
+        }
+        LazyVerticalGrid(
+            columns = GridCells.Fixed(3),
+            modifier = Modifier.fillMaxSize().padding(horizontal = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            items(items, key = { it.stableId }) { item ->
+                AsyncImage(
+                    model = ImageRequest.Builder(LocalContext.current)
+                        .data(item.uri)
+                        .size(320)
+                        .precision(Precision.INEXACT)
+                        .memoryCachePolicy(CachePolicy.ENABLED)
+                        .diskCachePolicy(CachePolicy.ENABLED)
+                        .build(),
+                    imageLoader = imageLoader,
+                    contentDescription = null,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(120.dp)
+                        .combinedClickable(
+                            onClick = { fullscreenIndex = items.indexOf(item) },
+                            onLongClick = {}
+                        ),
+                    contentScale = ContentScale.Crop
+                )
+            }
+        }
+    }
+
+    fullscreenIndex?.let { index ->
+        FullscreenMediaViewer(
+            mediaItems = items,
+            initialIndex = index,
+            onDismiss = { fullscreenIndex = null },
+            onShare = { currentItem -> onShareMedia(listOf(currentItem)) },
+            onDelete = { currentItem -> onDeleteMedia(listOf(currentItem)) },
+            imageLoader = imageLoader
+        )
+    }
+}
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun FullscreenMediaViewer(
@@ -720,7 +1052,8 @@ private fun FullscreenMediaViewer(
     initialIndex: Int,
     onDismiss: () -> Unit,
     onShare: (MediaItem) -> Unit,
-    onDelete: (MediaItem) -> Unit
+    onDelete: (MediaItem) -> Unit,
+    imageLoader: ImageLoader
 ) {
     if (mediaItems.isEmpty()) {
         return
@@ -739,11 +1072,14 @@ private fun FullscreenMediaViewer(
         ).filter { it.type == MediaType.PHOTO }
 
         preloadTargets.forEach { mediaItem ->
-            context.imageLoader.enqueue(
+            imageLoader.enqueue(
                 ImageRequest.Builder(context)
                     .data(mediaItem.uri)
                     .size(1_600)
                     .allowHardware(true)
+                    .precision(Precision.INEXACT)
+                    .memoryCachePolicy(CachePolicy.ENABLED)
+                    .diskCachePolicy(CachePolicy.ENABLED)
                     .build()
             )
         }
@@ -769,6 +1105,7 @@ private fun FullscreenMediaViewer(
                     }
                     AsyncImage(
                         model = fullscreenRequest,
+                        imageLoader = imageLoader,
                         contentDescription = "Selected photo",
                         modifier = Modifier.fillMaxSize(),
                         contentScale = ContentScale.Fit
@@ -791,12 +1128,19 @@ private fun FullscreenMediaViewer(
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
                         .fillMaxWidth()
-                        .padding(horizontal = 24.dp, vertical = 24.dp),
+                        .navigationBarsPadding()
+                        .padding(start = 24.dp, end = 24.dp, top = 24.dp, bottom = 36.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     IconButton(onClick = { onShare(currentItem) }) {
                         Icon(imageVector = Icons.Default.Share, contentDescription = "Share", tint = Color.White)
+                    }
+                    Button(
+                        onClick = onDismiss,
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0x66000000))
+                    ) {
+                        Text("Albums", color = Color.White)
                     }
                     IconButton(onClick = { onDelete(currentItem) }) {
                         Icon(imageVector = Icons.Default.Delete, contentDescription = "Delete", tint = Color.White)
