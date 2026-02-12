@@ -936,7 +936,9 @@ private fun GalleryRootContent(
                 title = selectedAlbum?.name.orEmpty(),
                 items = albumItems,
                 imageLoader = imageLoader,
-                onBack = { mode = GalleryScreenMode.ALBUMS }
+                onBack = { mode = GalleryScreenMode.ALBUMS },
+                onShareMedia = onShareMedia,
+                onDeleteMedia = onDeleteMedia
             )
         }
 
@@ -985,7 +987,16 @@ private fun AlbumListContent(albums: List<AlbumInfo>, imageLoader: ImageLoader, 
 }
 
 @Composable
-private fun AlbumMediaContent(title: String, items: List<MediaItem>, imageLoader: ImageLoader, onBack: () -> Unit) {
+private fun AlbumMediaContent(
+    title: String,
+    items: List<MediaItem>,
+    imageLoader: ImageLoader,
+    onBack: () -> Unit,
+    onShareMedia: (List<MediaItem>) -> Unit,
+    onDeleteMedia: (List<MediaItem>) -> Unit
+) {
+    var fullscreenIndex by remember { mutableStateOf<Int?>(null) }
+
     Column(modifier = Modifier.fillMaxSize()) {
         Row(modifier = Modifier.fillMaxWidth().padding(12.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             Text(title, fontWeight = FontWeight.Bold)
@@ -1008,11 +1019,28 @@ private fun AlbumMediaContent(title: String, items: List<MediaItem>, imageLoader
                         .build(),
                     imageLoader = imageLoader,
                     contentDescription = null,
-                    modifier = Modifier.fillMaxWidth().height(120.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(120.dp)
+                        .combinedClickable(
+                            onClick = { fullscreenIndex = items.indexOf(item) },
+                            onLongClick = {}
+                        ),
                     contentScale = ContentScale.Crop
                 )
             }
         }
+    }
+
+    fullscreenIndex?.let { index ->
+        FullscreenMediaViewer(
+            mediaItems = items,
+            initialIndex = index,
+            onDismiss = { fullscreenIndex = null },
+            onShare = { currentItem -> onShareMedia(listOf(currentItem)) },
+            onDelete = { currentItem -> onDeleteMedia(listOf(currentItem)) },
+            imageLoader = imageLoader
+        )
     }
 }
 
@@ -1099,7 +1127,8 @@ private fun FullscreenMediaViewer(
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
                         .fillMaxWidth()
-                        .padding(horizontal = 24.dp, vertical = 24.dp),
+                        .navigationBarsPadding()
+                        .padding(start = 24.dp, end = 24.dp, top = 24.dp, bottom = 36.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
