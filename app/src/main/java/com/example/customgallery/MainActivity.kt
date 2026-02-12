@@ -47,6 +47,7 @@ import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.CircularProgressIndicator
@@ -125,6 +126,15 @@ data class GalleryUiState(
     val isLoading: Boolean = false
 )
 
+data class AlbumsUiState(
+    val albums: List<AlbumInfo> = emptyList(),
+    val selectedAlbumId: Long? = null,
+    val albumItems: List<MediaItem> = emptyList(),
+    val hasMoreAlbumItems: Boolean = true,
+    val isAlbumsLoading: Boolean = false,
+    val isAlbumItemsLoading: Boolean = false
+)
+
 enum class GalleryScreenMode {
     GRID,
     ALBUMS,
@@ -151,30 +161,22 @@ class GalleryViewModel : ViewModel() {
 
     private val _uiState = MutableStateFlow(GalleryUiState())
     val uiState: StateFlow<GalleryUiState> = _uiState
+    private val _albumsUiState = MutableStateFlow(AlbumsUiState())
+    val albumsUiState: StateFlow<AlbumsUiState> = _albumsUiState
 
     private val pageSize = 180
+    private val albumPageSize = 120
     private var nextOffset = 0
+    private var albumNextOffset = 0
     private var lastCanReadImages = false
     private var lastCanReadVideos = false
+    private var albumCache: List<AlbumInfo> = emptyList()
 
     fun refreshMedia(context: Context) {
+        albumCache = emptyList()
+        _albumsUiState.update { AlbumsUiState() }
         loadInitialMedia(context, lastCanReadImages, lastCanReadVideos)
     }
-
-    fun queryAlbums(context: Context): List<AlbumInfo> = queryAlbumsInternal(
-        context = context,
-        canReadImages = lastCanReadImages,
-        canReadVideos = lastCanReadVideos
-    )
-
-    fun queryAlbumMedia(context: Context, bucketId: Long): List<MediaItem> = queryMediaPage(
-        context = context,
-        canReadImages = lastCanReadImages,
-        canReadVideos = lastCanReadVideos,
-        limit = Int.MAX_VALUE,
-        offset = 0,
-        bucketId = bucketId
-    )
 
     fun loadInitialMedia(context: Context, canReadImages: Boolean, canReadVideos: Boolean) {
         lastCanReadImages = canReadImages
@@ -188,7 +190,90 @@ class GalleryViewModel : ViewModel() {
                 selectedMediaIds = emptySet()
             )
         }
+        _albumsUiState.update { AlbumsUiState() }
         loadNextPage(context = context)
+    }
+
+    fun loadAlbums(context: Context, forceRefresh: Boolean = false) {
+        val current = _albumsUiState.value
+        if (current.isAlbumsLoading) return
+        if (!forceRefresh && albumCache.isNotEmpty()) {
+            _albumsUiState.update { it.copy(albums = albumCache) }
+            return
+        }
+
+        _albumsUiState.update { it.copy(isAlbumsLoading = true) }
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                queryAlbumsInternal(
+                    context = context,
+                    canReadImages = lastCanReadImages,
+                    canReadVideos = lastCanReadVideos
+                )
+            }.onSuccess { albums ->
+                albumCache = albums
+                _albumsUiState.update { it.copy(albums = albums, isAlbumsLoading = false) }
+            }.onFailure { error ->
+                Log.e(TAG, "Failed to load albums", error)
+                _albumsUiState.update { it.copy(isAlbumsLoading = false) }
+            }
+        }
+    }
+
+    fun openAlbum(context: Context, bucketId: Long) {
+        albumNextOffset = 0
+        _albumsUiState.update {
+            it.copy(
+                selectedAlbumId = bucketId,
+                albumItems = emptyList(),
+                hasMoreAlbumItems = true,
+                isAlbumItemsLoading = false
+            )
+        }
+        loadNextAlbumPage(context)
+    }
+
+    fun loadNextAlbumPage(context: Context) {
+        val current = _albumsUiState.value
+        val selectedId = current.selectedAlbumId ?: return
+        if (current.isAlbumItemsLoading || !current.hasMoreAlbumItems) return
+
+        _albumsUiState.update { it.copy(isAlbumItemsLoading = true) }
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                queryMediaPage(
+                    context = context,
+                    canReadImages = lastCanReadImages,
+                    canReadVideos = lastCanReadVideos,
+                    limit = albumPageSize,
+                    offset = albumNextOffset,
+                    bucketId = selectedId
+                )
+            }.onSuccess { page ->
+                albumNextOffset += page.size
+                _albumsUiState.update {
+                    it.copy(
+                        albumItems = it.albumItems + page,
+                        hasMoreAlbumItems = page.size == albumPageSize,
+                        isAlbumItemsLoading = false
+                    )
+                }
+            }.onFailure { error ->
+                Log.e(TAG, "Failed to load album media page", error)
+                _albumsUiState.update { it.copy(isAlbumItemsLoading = false, hasMoreAlbumItems = false) }
+            }
+        }
+    }
+
+    fun clearSelectedAlbum() {
+        _albumsUiState.update {
+            it.copy(
+                selectedAlbumId = null,
+                albumItems = emptyList(),
+                hasMoreAlbumItems = true,
+                isAlbumItemsLoading = false
+            )
+        }
     }
 
     fun loadNextPage(context: Context) {
@@ -445,6 +530,7 @@ class MainActivity : ComponentActivity() {
 private fun GalleryScreen(viewModel: GalleryViewModel) {
     val context = LocalContext.current
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val albumsState by viewModel.albumsUiState.collectAsStateWithLifecycle()
     var pendingDeleteIds by remember { mutableStateOf<Set<String>>(emptySet()) }
 
     val permissions = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
@@ -603,14 +689,17 @@ private fun GalleryScreen(viewModel: GalleryViewModel) {
 
         GalleryRootContent(
             state = state,
+            albumsState = albumsState,
             onGridColumnChange = viewModel::setGridColumns,
             onToggleSelection = viewModel::toggleSelection,
             onLoadNextPage = { viewModel.loadNextPage(context) },
             onShareMedia = ::shareMediaItems,
             onDeleteMedia = ::requestDelete,
             onRefreshMedia = { viewModel.refreshMedia(context) },
-            queryAlbums = { viewModel.queryAlbums(context) },
-            queryAlbumMedia = { bucketId -> viewModel.queryAlbumMedia(context, bucketId) }
+            onLoadAlbums = { forceRefresh -> viewModel.loadAlbums(context, forceRefresh) },
+            onOpenAlbum = { bucketId -> viewModel.openAlbum(context, bucketId) },
+            onLoadNextAlbumPage = { viewModel.loadNextAlbumPage(context) },
+            onClearSelectedAlbum = viewModel::clearSelectedAlbum
         )
     } else {
         PermissionView(onRequestPermission = { permissionLauncher.launch(permissions.toTypedArray()) })
@@ -695,7 +784,7 @@ private fun GalleryGridContent(
             horizontalArrangement = Arrangement.spacedBy(4.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp)
         ) {
-            items(state.mediaItems, key = { item -> item.stableId }) { item ->
+            itemsIndexed(state.mediaItems, key = { _, item -> item.stableId }) { index, item ->
                 val selected = state.selectedMediaIds.contains(item.stableId)
                 val thumbnailRequest = remember(item.uri) {
                     ImageRequest.Builder(context)
@@ -717,7 +806,7 @@ private fun GalleryGridContent(
                         .background(MaterialTheme.colorScheme.surfaceVariant)
                         .combinedClickable(
                             onClick = {
-                                fullscreenIndex = state.mediaItems.indexOf(item)
+                                fullscreenIndex = index
                             },
                             onLongClick = { onToggleSelection(item.stableId) }
                         )
@@ -875,40 +964,40 @@ private fun rememberGalleryImageLoader(context: Context): ImageLoader {
 @Composable
 private fun GalleryRootContent(
     state: GalleryUiState,
+    albumsState: AlbumsUiState,
     onGridColumnChange: (Int) -> Unit,
     onToggleSelection: (String) -> Unit,
     onLoadNextPage: () -> Unit,
     onShareMedia: (List<MediaItem>) -> Unit,
     onDeleteMedia: (List<MediaItem>) -> Unit,
     onRefreshMedia: () -> Unit,
-    queryAlbums: () -> List<AlbumInfo>,
-    queryAlbumMedia: (Long) -> List<MediaItem>
+    onLoadAlbums: (Boolean) -> Unit,
+    onOpenAlbum: (Long) -> Unit,
+    onLoadNextAlbumPage: () -> Unit,
+    onClearSelectedAlbum: () -> Unit
 ) {
     val context = LocalContext.current
     var mode by remember { mutableStateOf(GalleryScreenMode.GRID) }
-    var selectedAlbum by remember { mutableStateOf<AlbumInfo?>(null) }
-    var albums by remember { mutableStateOf(emptyList<AlbumInfo>()) }
-    var albumItems by remember { mutableStateOf(emptyList<MediaItem>()) }
+    val selectedAlbum = remember(albumsState.selectedAlbumId, albumsState.albums) {
+        albumsState.albums.firstOrNull { it.bucketId == albumsState.selectedAlbumId }
+    }
     val imageLoader = rememberGalleryImageLoader(context)
 
-    DisposableEffect(Unit) {
+    DisposableEffect(albumsState.selectedAlbumId) {
         val observer = object : ContentObserver(Handler(Looper.getMainLooper())) {
             override fun onChange(selfChange: Boolean) {
                 onRefreshMedia()
-                albums = queryAlbums()
-                selectedAlbum?.let { albumItems = queryAlbumMedia(it.bucketId) }
+                onLoadAlbums(true)
+                albumsState.selectedAlbumId?.let { onOpenAlbum(it) }
             }
         }
         context.contentResolver.registerContentObserver(MediaStore.Files.getContentUri("external"), true, observer)
         onDispose { context.contentResolver.unregisterContentObserver(observer) }
     }
 
-    LaunchedEffect(mode, state.mediaItems.size) {
+    LaunchedEffect(mode) {
         if (mode == GalleryScreenMode.ALBUMS || mode == GalleryScreenMode.ALBUM_CONTENT) {
-            albums = queryAlbums()
-        }
-        if (mode == GalleryScreenMode.ALBUM_CONTENT) {
-            selectedAlbum?.let { albumItems = queryAlbumMedia(it.bucketId) }
+            onLoadAlbums(false)
         }
     }
 
@@ -924,19 +1013,25 @@ private fun GalleryRootContent(
                 imageLoader = imageLoader
             )
             GalleryScreenMode.ALBUMS -> AlbumListContent(
-                albums = albums,
+                albums = albumsState.albums,
+                isLoading = albumsState.isAlbumsLoading,
                 imageLoader = imageLoader,
                 onAlbumOpen = { album ->
-                    selectedAlbum = album
-                    albumItems = queryAlbumMedia(album.bucketId)
+                    onOpenAlbum(album.bucketId)
                     mode = GalleryScreenMode.ALBUM_CONTENT
                 }
             )
             GalleryScreenMode.ALBUM_CONTENT -> AlbumMediaContent(
                 title = selectedAlbum?.name.orEmpty(),
-                items = albumItems,
+                items = albumsState.albumItems,
+                hasMoreItems = albumsState.hasMoreAlbumItems,
+                isLoading = albumsState.isAlbumItemsLoading,
                 imageLoader = imageLoader,
-                onBack = { mode = GalleryScreenMode.ALBUMS },
+                onBack = {
+                    onClearSelectedAlbum()
+                    mode = GalleryScreenMode.ALBUMS
+                },
+                onLoadNextPage = onLoadNextAlbumPage,
                 onShareMedia = onShareMedia,
                 onDeleteMedia = onDeleteMedia
             )
@@ -951,7 +1046,12 @@ private fun GalleryRootContent(
 }
 
 @Composable
-private fun AlbumListContent(albums: List<AlbumInfo>, imageLoader: ImageLoader, onAlbumOpen: (AlbumInfo) -> Unit) {
+private fun AlbumListContent(
+    albums: List<AlbumInfo>,
+    isLoading: Boolean,
+    imageLoader: ImageLoader,
+    onAlbumOpen: (AlbumInfo) -> Unit
+) {
     LazyColumn(contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxSize()) {
         items(albums, key = { it.bucketId }) { album ->
             Row(
@@ -983,6 +1083,14 @@ private fun AlbumListContent(albums: List<AlbumInfo>, imageLoader: ImageLoader, 
                 }
             }
         }
+
+        if (isLoading) {
+            item {
+                Box(modifier = Modifier.fillMaxWidth().padding(vertical = 16.dp), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator()
+                }
+            }
+        }
     }
 }
 
@@ -991,12 +1099,28 @@ private fun AlbumListContent(albums: List<AlbumInfo>, imageLoader: ImageLoader, 
 private fun AlbumMediaContent(
     title: String,
     items: List<MediaItem>,
+    hasMoreItems: Boolean,
+    isLoading: Boolean,
     imageLoader: ImageLoader,
     onBack: () -> Unit,
+    onLoadNextPage: () -> Unit,
     onShareMedia: (List<MediaItem>) -> Unit,
     onDeleteMedia: (List<MediaItem>) -> Unit
 ) {
     var fullscreenIndex by remember { mutableStateOf<Int?>(null) }
+    val gridState = rememberLazyGridState()
+    val shouldLoadNextPage by remember(items.size, hasMoreItems, isLoading) {
+        derivedStateOf {
+            val lastVisible = gridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
+            hasMoreItems && !isLoading && lastVisible >= items.lastIndex - 18
+        }
+    }
+
+    LaunchedEffect(shouldLoadNextPage) {
+        if (shouldLoadNextPage) {
+            onLoadNextPage()
+        }
+    }
 
     Column(modifier = Modifier.fillMaxSize()) {
         Row(modifier = Modifier.fillMaxWidth().padding(12.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
@@ -1005,11 +1129,12 @@ private fun AlbumMediaContent(
         }
         LazyVerticalGrid(
             columns = GridCells.Fixed(3),
+            state = gridState,
             modifier = Modifier.fillMaxSize().padding(horizontal = 4.dp),
             horizontalArrangement = Arrangement.spacedBy(4.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp)
         ) {
-            items(items, key = { it.stableId }) { item ->
+            itemsIndexed(items, key = { _, item -> item.stableId }) { index, item ->
                 AsyncImage(
                     model = ImageRequest.Builder(LocalContext.current)
                         .data(item.uri)
@@ -1024,11 +1149,19 @@ private fun AlbumMediaContent(
                         .fillMaxWidth()
                         .height(120.dp)
                         .combinedClickable(
-                            onClick = { fullscreenIndex = items.indexOf(item) },
+                            onClick = { fullscreenIndex = index },
                             onLongClick = {}
                         ),
                     contentScale = ContentScale.Crop
                 )
+            }
+
+            if (isLoading) {
+                item(span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }) {
+                    Box(modifier = Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator()
+                    }
+                }
             }
         }
     }
