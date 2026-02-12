@@ -986,6 +986,7 @@ private fun AlbumListContent(albums: List<AlbumInfo>, imageLoader: ImageLoader, 
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun AlbumMediaContent(
     title: String,
