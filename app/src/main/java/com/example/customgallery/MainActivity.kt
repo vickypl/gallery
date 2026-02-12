@@ -92,7 +92,7 @@ import coil.disk.DiskCache
 import coil.memory.MemoryCache
 import coil.request.CachePolicy
 import coil.request.ImageRequest
-import coil.request.Precision
+import coil.size.Precision
 import coil.size.Scale
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
