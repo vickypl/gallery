@@ -35,13 +35,15 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -59,6 +61,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -550,7 +554,7 @@ private fun GalleryContent(
     }
 
     fullscreenIndex?.let { index ->
-        FullscreenMediaDialog(
+        FullscreenMediaViewer(
             mediaItems = state.mediaItems,
             initialIndex = index,
             onDismiss = { fullscreenIndex = null }
@@ -577,7 +581,7 @@ private fun GridControl(columns: Int, onGridColumnChange: (Int) -> Unit) {
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun FullscreenMediaDialog(
+private fun FullscreenMediaViewer(
     mediaItems: List<MediaItem>,
     initialIndex: Int,
     onDismiss: () -> Unit
@@ -606,11 +610,23 @@ private fun FullscreenMediaDialog(
         }
     }
 
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        text = {
+    Surface(
+        modifier = Modifier.fillMaxSize(),
+        color = Color.Black
+    ) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            TopAppBar(
+                title = { Text(text = "${pagerState.currentPage + 1}/${mediaItems.size}") },
+                navigationIcon = {
+                    IconButton(onClick = onDismiss) {
+                        Icon(imageVector = Icons.Default.Close, contentDescription = "Close")
+                    }
+                }
+            )
+
             HorizontalPager(
-                state = pagerState
+                state = pagerState,
+                modifier = Modifier.weight(1f)
             ) { page ->
                 val mediaItem = mediaItems[page]
                 if (mediaItem.type == MediaType.PHOTO) {
@@ -624,33 +640,22 @@ private fun FullscreenMediaDialog(
                     AsyncImage(
                         model = fullscreenRequest,
                         contentDescription = "Selected photo",
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier.fillMaxSize(),
                         contentScale = ContentScale.Fit
                     )
                 } else {
                     FullscreenVideoPlayer(videoUri = mediaItem.uri)
                 }
             }
-        },
-        confirmButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Close")
-            }
-        },
-        icon = {
-            Text(
-                text = "${pagerState.currentPage + 1}/${mediaItems.size}"
-            )
         }
-    )
+    }
 }
 
 @Composable
 private fun FullscreenVideoPlayer(videoUri: Uri) {
     AndroidView(
         modifier = Modifier
-            .fillMaxWidth()
-            .size(280.dp),
+            .fillMaxSize(),
         factory = { context ->
             VideoView(context).apply {
                 setVideoURI(videoUri)
