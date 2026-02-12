@@ -14,6 +14,7 @@ import android.util.Log
 import android.widget.MediaController
 import android.widget.VideoView
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -46,8 +47,6 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -66,7 +65,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Share
 import androidx.core.content.ContextCompat
@@ -678,15 +676,16 @@ private fun SelectedMediaActions(
     onShareSelected: () -> Unit,
     onDeleteSelected: () -> Unit
 ) {
-    Row(
+    Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 4.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
+            .padding(horizontal = 16.dp, vertical = 4.dp)
     ) {
         Text(text = "$selectedCount selected")
-        Row {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
             IconButton(onClick = onShareSelected) {
                 Icon(imageVector = Icons.Default.Share, contentDescription = "Share selected")
             }
@@ -714,7 +713,7 @@ private fun GridControl(columns: Int, onGridColumnChange: (Int) -> Unit) {
     }
 }
 
-@OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun FullscreenMediaViewer(
     mediaItems: List<MediaItem>,
@@ -729,6 +728,9 @@ private fun FullscreenMediaViewer(
 
     val context = LocalContext.current
     val pagerState = rememberPagerState(initialPage = initialIndex, pageCount = { mediaItems.size })
+    val currentItem = mediaItems.getOrNull(pagerState.currentPage)
+
+    BackHandler(onBack = onDismiss)
 
     LaunchedEffect(pagerState.currentPage) {
         val preloadTargets = listOfNotNull(
@@ -751,30 +753,10 @@ private fun FullscreenMediaViewer(
         modifier = Modifier.fillMaxSize(),
         color = Color.Black
     ) {
-        Column(modifier = Modifier.fillMaxSize()) {
-            TopAppBar(
-                title = { Text(text = "${pagerState.currentPage + 1}/${mediaItems.size}") },
-                navigationIcon = {
-                    IconButton(onClick = onDismiss) {
-                        Icon(imageVector = Icons.Default.Close, contentDescription = "Close")
-                    }
-                },
-                actions = {
-                    val currentItem = mediaItems.getOrNull(pagerState.currentPage)
-                    if (currentItem != null) {
-                        IconButton(onClick = { onShare(currentItem) }) {
-                            Icon(imageVector = Icons.Default.Share, contentDescription = "Share")
-                        }
-                        IconButton(onClick = { onDelete(currentItem) }) {
-                            Icon(imageVector = Icons.Default.Delete, contentDescription = "Delete")
-                        }
-                    }
-                }
-            )
-
+        Box(modifier = Modifier.fillMaxSize()) {
             HorizontalPager(
                 state = pagerState,
-                modifier = Modifier.weight(1f)
+                modifier = Modifier.fillMaxSize()
             ) { page ->
                 val mediaItem = mediaItems[page]
                 if (mediaItem.type == MediaType.PHOTO) {
@@ -793,6 +775,32 @@ private fun FullscreenMediaViewer(
                     )
                 } else {
                     FullscreenVideoPlayer(videoUri = mediaItem.uri)
+                }
+            }
+
+            Text(
+                text = "${pagerState.currentPage + 1}/${mediaItems.size}",
+                color = Color.White,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 16.dp)
+            )
+
+            if (currentItem != null) {
+                Row(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .fillMaxWidth()
+                        .padding(horizontal = 24.dp, vertical = 24.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    IconButton(onClick = { onShare(currentItem) }) {
+                        Icon(imageVector = Icons.Default.Share, contentDescription = "Share", tint = Color.White)
+                    }
+                    IconButton(onClick = { onDelete(currentItem) }) {
+                        Icon(imageVector = Icons.Default.Delete, contentDescription = "Delete", tint = Color.White)
+                    }
                 }
             }
         }
