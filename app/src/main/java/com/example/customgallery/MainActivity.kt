@@ -1,8 +1,10 @@
 package com.example.customgallery
 
 import android.Manifest
+import android.app.Activity
 import android.content.ContentUris
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Bundle
@@ -16,6 +18,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.result.IntentSenderRequest
 import androidx.activity.viewModels
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -64,6 +67,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Share
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -78,6 +83,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 enum class MediaType {
     PHOTO,
@@ -184,6 +190,17 @@ class GalleryViewModel : ViewModel() {
                 mutableSet.remove(mediaId)
             }
             current.copy(selectedMediaIds = mutableSet)
+        }
+    }
+
+    fun removeMediaByStableIds(stableIds: Set<String>) {
+        if (stableIds.isEmpty()) return
+
+        _uiState.update { current ->
+            current.copy(
+                mediaItems = current.mediaItems.filterNot { media -> stableIds.contains(media.stableId) },
+                selectedMediaIds = current.selectedMediaIds - stableIds
+            )
         }
     }
 
@@ -304,6 +321,7 @@ class MainActivity : ComponentActivity() {
 private fun GalleryScreen(viewModel: GalleryViewModel) {
     val context = LocalContext.current
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+    var pendingDeleteIds by remember { mutableStateOf<Set<String>>(emptySet()) }
 
     val permissions = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
         listOf(
@@ -383,6 +401,73 @@ private fun GalleryScreen(viewModel: GalleryViewModel) {
         }
     }
 
+    val deleteLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartIntentSenderForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            viewModel.removeMediaByStableIds(pendingDeleteIds)
+        }
+        pendingDeleteIds = emptySet()
+    }
+
+    fun shareMediaItems(items: List<MediaItem>) {
+        if (items.isEmpty()) return
+
+        val uris = items.map { it.uri }
+        val mimeType = when {
+            items.all { it.type == MediaType.PHOTO } -> "image/*"
+            items.all { it.type == MediaType.VIDEO } -> "video/*"
+            else -> "*/*"
+        }
+
+        val shareIntent = if (uris.size == 1) {
+            Intent(Intent.ACTION_SEND).apply {
+                type = mimeType
+                putExtra(Intent.EXTRA_STREAM, uris.first())
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+        } else {
+            Intent(Intent.ACTION_SEND_MULTIPLE).apply {
+                type = mimeType
+                putParcelableArrayListExtra(Intent.EXTRA_STREAM, ArrayList(uris))
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+        }
+
+        context.startActivity(Intent.createChooser(shareIntent, "Share media"))
+    }
+
+    fun requestDelete(items: List<MediaItem>) {
+        if (items.isEmpty()) return
+
+        val ids = items.map { it.stableId }.toSet()
+        val uris = items.map { it.uri }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            pendingDeleteIds = ids
+            val intentSender = MediaStore.createDeleteRequest(context.contentResolver, uris).intentSender
+            deleteLauncher.launch(IntentSenderRequest.Builder(intentSender).build())
+            return
+        }
+
+        viewModel.viewModelScope.launch(Dispatchers.IO) {
+            val deleted = mutableSetOf<String>()
+            items.forEach { item ->
+                runCatching {
+                    context.contentResolver.delete(item.uri, null, null)
+                }.onSuccess { rowsDeleted ->
+                    if (rowsDeleted > 0) {
+                        deleted.add(item.stableId)
+                    }
+                }
+            }
+
+            withContext(Dispatchers.Main) {
+                viewModel.removeMediaByStableIds(deleted)
+            }
+        }
+    }
+
     if (permissionState.hasAnyMediaAccess) {
         LaunchedEffect(permissionState) {
             viewModel.loadInitialMedia(
@@ -396,7 +481,9 @@ private fun GalleryScreen(viewModel: GalleryViewModel) {
             state = state,
             onGridColumnChange = viewModel::setGridColumns,
             onToggleSelection = viewModel::toggleSelection,
-            onLoadNextPage = { viewModel.loadNextPage(context) }
+            onLoadNextPage = { viewModel.loadNextPage(context) },
+            onShareMedia = ::shareMediaItems,
+            onDeleteMedia = ::requestDelete
         )
     } else {
         PermissionView(onRequestPermission = { permissionLauncher.launch(permissions.toTypedArray()) })
@@ -425,7 +512,9 @@ private fun GalleryContent(
     state: GalleryUiState,
     onGridColumnChange: (Int) -> Unit,
     onToggleSelection: (String) -> Unit,
-    onLoadNextPage: () -> Unit
+    onLoadNextPage: () -> Unit,
+    onShareMedia: (List<MediaItem>) -> Unit,
+    onDeleteMedia: (List<MediaItem>) -> Unit
 ) {
     val context = LocalContext.current
     var fullscreenIndex by remember { mutableStateOf<Int?>(null) }
@@ -436,10 +525,22 @@ private fun GalleryContent(
             state.hasMoreItems && !state.isLoading && lastVisibleIndex >= state.mediaItems.lastIndex - 24
         }
     }
+    val selectedMediaItems by remember(state.selectedMediaIds, state.mediaItems) {
+        derivedStateOf {
+            state.mediaItems.filter { item -> state.selectedMediaIds.contains(item.stableId) }
+        }
+    }
 
     LaunchedEffect(shouldLoadNextPage) {
         if (shouldLoadNextPage) {
             onLoadNextPage()
+        }
+    }
+
+    LaunchedEffect(state.mediaItems.size, fullscreenIndex) {
+        val current = fullscreenIndex
+        if (current != null && (current < 0 || current > state.mediaItems.lastIndex)) {
+            fullscreenIndex = null
         }
     }
 
@@ -448,6 +549,14 @@ private fun GalleryContent(
             columns = state.gridColumns,
             onGridColumnChange = onGridColumnChange
         )
+
+        if (selectedMediaItems.isNotEmpty()) {
+            SelectedMediaActions(
+                selectedCount = selectedMediaItems.size,
+                onShareSelected = { onShareMedia(selectedMediaItems) },
+                onDeleteSelected = { onDeleteMedia(selectedMediaItems) }
+            )
+        }
 
         LazyVerticalGrid(
             columns = GridCells.Fixed(state.gridColumns),
@@ -465,7 +574,7 @@ private fun GalleryContent(
                         .data(item.uri)
                         .size(320)
                         .allowHardware(true)
-                        .crossfade(true)
+                        .crossfade(false)
                         .scale(Scale.FILL)
                         .build()
                 }
@@ -477,9 +586,7 @@ private fun GalleryContent(
                         .background(MaterialTheme.colorScheme.surfaceVariant)
                         .combinedClickable(
                             onClick = {
-                                fullscreenIndex = state.mediaItems.indexOfFirst { media ->
-                                    media.stableId == item.stableId
-                                }.takeIf { it >= 0 }
+                                fullscreenIndex = state.mediaItems.indexOf(item)
                             },
                             onLongClick = { onToggleSelection(item.stableId) }
                         )
@@ -558,8 +665,35 @@ private fun GalleryContent(
         FullscreenMediaViewer(
             mediaItems = state.mediaItems,
             initialIndex = index,
-            onDismiss = { fullscreenIndex = null }
+            onDismiss = { fullscreenIndex = null },
+            onShare = { currentItem -> onShareMedia(listOf(currentItem)) },
+            onDelete = { currentItem -> onDeleteMedia(listOf(currentItem)) }
         )
+    }
+}
+
+@Composable
+private fun SelectedMediaActions(
+    selectedCount: Int,
+    onShareSelected: () -> Unit,
+    onDeleteSelected: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 4.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(text = "$selectedCount selected")
+        Row {
+            IconButton(onClick = onShareSelected) {
+                Icon(imageVector = Icons.Default.Share, contentDescription = "Share selected")
+            }
+            IconButton(onClick = onDeleteSelected) {
+                Icon(imageVector = Icons.Default.Delete, contentDescription = "Delete selected")
+            }
+        }
     }
 }
 
@@ -585,7 +719,9 @@ private fun GridControl(columns: Int, onGridColumnChange: (Int) -> Unit) {
 private fun FullscreenMediaViewer(
     mediaItems: List<MediaItem>,
     initialIndex: Int,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    onShare: (MediaItem) -> Unit,
+    onDelete: (MediaItem) -> Unit
 ) {
     if (mediaItems.isEmpty()) {
         return
@@ -621,6 +757,17 @@ private fun FullscreenMediaViewer(
                 navigationIcon = {
                     IconButton(onClick = onDismiss) {
                         Icon(imageVector = Icons.Default.Close, contentDescription = "Close")
+                    }
+                },
+                actions = {
+                    val currentItem = mediaItems.getOrNull(pagerState.currentPage)
+                    if (currentItem != null) {
+                        IconButton(onClick = { onShare(currentItem) }) {
+                            Icon(imageVector = Icons.Default.Share, contentDescription = "Share")
+                        }
+                        IconButton(onClick = { onDelete(currentItem) }) {
+                            Icon(imageVector = Icons.Default.Delete, contentDescription = "Delete")
+                        }
                     }
                 }
             )
