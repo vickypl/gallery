@@ -731,10 +731,11 @@ private fun GalleryGridContent(
     onLoadNextPage: () -> Unit,
     onShareMedia: (List<MediaItem>) -> Unit,
     onDeleteMedia: (List<MediaItem>) -> Unit,
+    onOpenAlbums: () -> Unit,
     imageLoader: ImageLoader
 ) {
     val context = LocalContext.current
-    var fullscreenIndex by remember { mutableStateOf<Int?>(null) }
+    var previewMediaId by remember { mutableStateOf<String?>(null) }
     val gridState = rememberLazyGridState()
     val shouldLoadNextPage by remember(state.mediaItems.size, state.hasMoreItems, state.isLoading) {
         derivedStateOf {
@@ -754,10 +755,10 @@ private fun GalleryGridContent(
         }
     }
 
-    LaunchedEffect(state.mediaItems.size, fullscreenIndex) {
-        val current = fullscreenIndex
-        if (current != null && (current < 0 || current > state.mediaItems.lastIndex)) {
-            fullscreenIndex = null
+    LaunchedEffect(state.mediaItems, previewMediaId) {
+        val previewId = previewMediaId ?: return@LaunchedEffect
+        if (state.mediaItems.none { it.stableId == previewId }) {
+            previewMediaId = null
         }
     }
 
@@ -784,7 +785,7 @@ private fun GalleryGridContent(
             horizontalArrangement = Arrangement.spacedBy(4.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp)
         ) {
-            itemsIndexed(state.mediaItems, key = { _, item -> item.stableId }) { index, item ->
+            itemsIndexed(state.mediaItems, key = { _, item -> item.stableId }) { _, item ->
                 val selected = state.selectedMediaIds.contains(item.stableId)
                 val thumbnailRequest = remember(item.uri) {
                     ImageRequest.Builder(context)
@@ -806,7 +807,7 @@ private fun GalleryGridContent(
                         .background(MaterialTheme.colorScheme.surfaceVariant)
                         .combinedClickable(
                             onClick = {
-                                fullscreenIndex = index
+                                previewMediaId = item.stableId
                             },
                             onLongClick = { onToggleSelection(item.stableId) }
                         )
@@ -882,11 +883,20 @@ private fun GalleryGridContent(
         }
     }
 
-    fullscreenIndex?.let { index ->
+    val previewIndex = remember(state.mediaItems, previewMediaId) {
+        val previewId = previewMediaId ?: return@remember null
+        state.mediaItems.indexOfFirst { it.stableId == previewId }.takeIf { it >= 0 }
+    }
+
+    previewIndex?.let { index ->
         FullscreenMediaViewer(
             mediaItems = state.mediaItems,
             initialIndex = index,
-            onDismiss = { fullscreenIndex = null },
+            onDismiss = { previewMediaId = null },
+            onOpenAlbums = {
+                previewMediaId = null
+                onOpenAlbums()
+            },
             onShare = { currentItem -> onShareMedia(listOf(currentItem)) },
             onDelete = { currentItem -> onDeleteMedia(listOf(currentItem)) },
             imageLoader = imageLoader
@@ -1010,6 +1020,7 @@ private fun GalleryRootContent(
                 onLoadNextPage = onLoadNextPage,
                 onShareMedia = onShareMedia,
                 onDeleteMedia = onDeleteMedia,
+                onOpenAlbums = { mode = GalleryScreenMode.ALBUMS },
                 imageLoader = imageLoader
             )
             GalleryScreenMode.ALBUMS -> AlbumListContent(
@@ -1107,7 +1118,7 @@ private fun AlbumMediaContent(
     onShareMedia: (List<MediaItem>) -> Unit,
     onDeleteMedia: (List<MediaItem>) -> Unit
 ) {
-    var fullscreenIndex by remember { mutableStateOf<Int?>(null) }
+    var previewMediaId by remember { mutableStateOf<String?>(null) }
     val gridState = rememberLazyGridState()
     val shouldLoadNextPage by remember(items.size, hasMoreItems, isLoading) {
         derivedStateOf {
@@ -1134,7 +1145,7 @@ private fun AlbumMediaContent(
             horizontalArrangement = Arrangement.spacedBy(4.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp)
         ) {
-            itemsIndexed(items, key = { _, item -> item.stableId }) { index, item ->
+            itemsIndexed(items, key = { _, item -> item.stableId }) { _, item ->
                 AsyncImage(
                     model = ImageRequest.Builder(LocalContext.current)
                         .data(item.uri)
@@ -1149,7 +1160,7 @@ private fun AlbumMediaContent(
                         .fillMaxWidth()
                         .height(120.dp)
                         .combinedClickable(
-                            onClick = { fullscreenIndex = index },
+                            onClick = { previewMediaId = item.stableId },
                             onLongClick = {}
                         ),
                     contentScale = ContentScale.Crop
@@ -1166,11 +1177,20 @@ private fun AlbumMediaContent(
         }
     }
 
-    fullscreenIndex?.let { index ->
+    val previewIndex = remember(items, previewMediaId) {
+        val previewId = previewMediaId ?: return@remember null
+        items.indexOfFirst { it.stableId == previewId }.takeIf { it >= 0 }
+    }
+
+    previewIndex?.let { index ->
         FullscreenMediaViewer(
             mediaItems = items,
             initialIndex = index,
-            onDismiss = { fullscreenIndex = null },
+            onDismiss = { previewMediaId = null },
+            onOpenAlbums = {
+                previewMediaId = null
+                onBack()
+            },
             onShare = { currentItem -> onShareMedia(listOf(currentItem)) },
             onDelete = { currentItem -> onDeleteMedia(listOf(currentItem)) },
             imageLoader = imageLoader
@@ -1184,6 +1204,7 @@ private fun FullscreenMediaViewer(
     mediaItems: List<MediaItem>,
     initialIndex: Int,
     onDismiss: () -> Unit,
+    onOpenAlbums: () -> Unit,
     onShare: (MediaItem) -> Unit,
     onDelete: (MediaItem) -> Unit,
     imageLoader: ImageLoader
@@ -1262,21 +1283,26 @@ private fun FullscreenMediaViewer(
                         .align(Alignment.BottomCenter)
                         .fillMaxWidth()
                         .navigationBarsPadding()
-                        .padding(start = 24.dp, end = 24.dp, top = 24.dp, bottom = 36.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
+                        .padding(start = 20.dp, end = 20.dp, top = 16.dp, bottom = 12.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    IconButton(onClick = { onShare(currentItem) }) {
-                        Icon(imageVector = Icons.Default.Share, contentDescription = "Share", tint = Color.White)
+                    Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
+                        IconButton(onClick = { onShare(currentItem) }) {
+                            Icon(imageVector = Icons.Default.Share, contentDescription = "Share", tint = Color.White)
+                        }
                     }
-                    Button(
-                        onClick = onDismiss,
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0x66000000))
-                    ) {
-                        Text("Albums", color = Color.White)
+                    Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.Center) {
+                        Button(
+                            onClick = onOpenAlbums,
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0x66000000))
+                        ) {
+                            Text("Album", color = Color.White)
+                        }
                     }
-                    IconButton(onClick = { onDelete(currentItem) }) {
-                        Icon(imageVector = Icons.Default.Delete, contentDescription = "Delete", tint = Color.White)
+                    Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.CenterEnd) {
+                        IconButton(onClick = { onDelete(currentItem) }) {
+                            Icon(imageVector = Icons.Default.Delete, contentDescription = "Delete", tint = Color.White)
+                        }
                     }
                 }
             }
