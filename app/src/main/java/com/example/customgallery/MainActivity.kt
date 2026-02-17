@@ -10,6 +10,7 @@ import android.os.Build
 import android.os.Bundle
 import android.provider.MediaStore
 import android.util.DisplayMetrics
+import android.util.Log
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -56,60 +57,71 @@ class MediaPagingSource(
 ) : PagingSource<Long, MediaItem>() {
 
     override suspend fun load(params: LoadParams<Long>): LoadResult<Long, MediaItem> {
-        if (!canReadImages && !canReadVideos) {
-            return LoadResult.Page(data = emptyList(), prevKey = null, nextKey = null)
-        }
-
-        val start = params.key ?: 0L
-        val limit = params.loadSize.coerceIn(100, 200)
-
-        val projection = arrayOf(
-            MediaStore.Files.FileColumns._ID,
-            MediaStore.Files.FileColumns.MEDIA_TYPE
-        )
-
-        val mediaTypes = buildList {
-            if (canReadImages) add(MediaStore.Files.FileColumns.MEDIA_TYPE_IMAGE)
-            if (canReadVideos) add(MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO)
-        }
-
-        val selection = buildString {
-            append("${MediaStore.Files.FileColumns._ID} > ?")
-            append(" AND ${MediaStore.Files.FileColumns.MEDIA_TYPE} IN (")
-            append(mediaTypes.joinToString(",") { "?" })
-            append(")")
-        }
-
-        val args = mutableListOf(start.toString()).apply {
-            addAll(mediaTypes.map { it.toString() })
-        }.toTypedArray()
-
-        val sortOrder = "${MediaStore.Files.FileColumns.DATE_TAKEN} DESC, ${MediaStore.Files.FileColumns._ID} DESC LIMIT $limit"
-
-        val items = mutableListOf<MediaItem>()
-        contentResolver.query(
-            MediaStore.Files.getContentUri("external"),
-            projection,
-            selection,
-            args,
-            sortOrder
-        )?.use { cursor ->
-            val idCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns._ID)
-            val typeCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.MEDIA_TYPE)
-            while (cursor.moveToNext()) {
-                val id = cursor.getLong(idCol)
-                val mediaType = cursor.getInt(typeCol)
-                val (baseUri, isVideo) = when (mediaType) {
-                    MediaStore.Files.FileColumns.MEDIA_TYPE_IMAGE -> MediaStore.Images.Media.EXTERNAL_CONTENT_URI to false
-                    MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO -> MediaStore.Video.Media.EXTERNAL_CONTENT_URI to true
-                    else -> continue
-                }
-                items += MediaItem(id = id, contentUri = ContentUris.withAppendedId(baseUri, id), isVideo = isVideo)
+        return try {
+            if (!canReadImages && !canReadVideos) {
+                return LoadResult.Page(data = emptyList(), prevKey = null, nextKey = null)
             }
-        }
 
-        val nextKey = items.lastOrNull()?.id?.takeIf { items.isNotEmpty() }
-        return LoadResult.Page(data = items, prevKey = null, nextKey = nextKey)
+            val startExclusive = params.key ?: Long.MAX_VALUE
+            val limit = params.loadSize.coerceIn(100, 200)
+
+            val projection = arrayOf(
+                MediaStore.Files.FileColumns._ID,
+                MediaStore.Files.FileColumns.MEDIA_TYPE
+            )
+
+            val mediaTypes = buildList {
+                if (canReadImages) add(MediaStore.Files.FileColumns.MEDIA_TYPE_IMAGE)
+                if (canReadVideos) add(MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO)
+            }
+
+            val selection = buildString {
+                append("${MediaStore.Files.FileColumns._ID} < ?")
+                append(" AND ${MediaStore.Files.FileColumns.MEDIA_TYPE} IN (")
+                append(mediaTypes.joinToString(",") { "?" })
+                append(")")
+            }
+
+            val args = mutableListOf(startExclusive.toString()).apply {
+                addAll(mediaTypes.map { it.toString() })
+            }.toTypedArray()
+
+            val sortOrder = "${MediaStore.Files.FileColumns.DATE_MODIFIED} DESC, ${MediaStore.Files.FileColumns._ID} DESC"
+
+            val items = mutableListOf<MediaItem>()
+            contentResolver.query(
+                MediaStore.Files.getContentUri("external"),
+                projection,
+                selection,
+                args,
+                "$sortOrder LIMIT $limit"
+            )?.use { cursor ->
+                val idCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns._ID)
+                val typeCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.MEDIA_TYPE)
+                while (cursor.moveToNext()) {
+                    val id = cursor.getLong(idCol)
+                    val mediaType = cursor.getInt(typeCol)
+                    val (baseUri, isVideo) = when (mediaType) {
+                        MediaStore.Files.FileColumns.MEDIA_TYPE_IMAGE -> MediaStore.Images.Media.EXTERNAL_CONTENT_URI to false
+                        MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO -> MediaStore.Video.Media.EXTERNAL_CONTENT_URI to true
+                        else -> continue
+                    }
+                    items += MediaItem(id = id, contentUri = ContentUris.withAppendedId(baseUri, id), isVideo = isVideo)
+                }
+            }
+
+            val nextKey = items.lastOrNull()?.id
+            LoadResult.Page(data = items, prevKey = null, nextKey = nextKey)
+        } catch (securityException: SecurityException) {
+            Log.e("MediaPagingSource", "Media query security failure", securityException)
+            LoadResult.Error(securityException)
+        } catch (illegalArgumentException: IllegalArgumentException) {
+            Log.e("MediaPagingSource", "Media query argument failure", illegalArgumentException)
+            LoadResult.Error(illegalArgumentException)
+        } catch (throwable: Throwable) {
+            Log.e("MediaPagingSource", "Unexpected media query failure", throwable)
+            LoadResult.Error(throwable)
+        }
     }
 
     override fun getRefreshKey(state: PagingState<Long, MediaItem>): Long? = null
@@ -193,7 +205,15 @@ class MainActivity : ComponentActivity() {
 
     private fun requestMediaPermissions() {
         val permissions = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            arrayOf(Manifest.permission.READ_MEDIA_IMAGES, Manifest.permission.READ_MEDIA_VIDEO)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                arrayOf(
+                    Manifest.permission.READ_MEDIA_IMAGES,
+                    Manifest.permission.READ_MEDIA_VIDEO,
+                    Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED
+                )
+            } else {
+                arrayOf(Manifest.permission.READ_MEDIA_IMAGES, Manifest.permission.READ_MEDIA_VIDEO)
+            }
         } else {
             arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
         }
@@ -202,7 +222,10 @@ class MainActivity : ComponentActivity() {
 
     private fun hasAnyMediaPermission(): Boolean {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            hasPermission(Manifest.permission.READ_MEDIA_IMAGES) || hasPermission(Manifest.permission.READ_MEDIA_VIDEO)
+            hasPermission(Manifest.permission.READ_MEDIA_IMAGES) ||
+                hasPermission(Manifest.permission.READ_MEDIA_VIDEO) ||
+                (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE &&
+                    hasPermission(Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED))
         } else {
             hasPermission(Manifest.permission.READ_EXTERNAL_STORAGE)
         }
@@ -212,8 +235,10 @@ class MainActivity : ComponentActivity() {
         val canReadImages: Boolean
         val canReadVideos: Boolean
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            canReadImages = hasPermission(Manifest.permission.READ_MEDIA_IMAGES)
-            canReadVideos = hasPermission(Manifest.permission.READ_MEDIA_VIDEO)
+            val selectedOnly = Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE &&
+                hasPermission(Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED)
+            canReadImages = hasPermission(Manifest.permission.READ_MEDIA_IMAGES) || selectedOnly
+            canReadVideos = hasPermission(Manifest.permission.READ_MEDIA_VIDEO) || selectedOnly
         } else {
             val legacy = hasPermission(Manifest.permission.READ_EXTERNAL_STORAGE)
             canReadImages = legacy
