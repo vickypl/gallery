@@ -547,10 +547,15 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        jankStats = JankStats.createAndTrack(window) { frameData ->
-            if (frameData.isJank) {
-                Log.w("JankStats", "Janky frame: durationUiNanos=${frameData.frameDurationUiNanos}")
+        jankStats = runCatching {
+            JankStats.createAndTrack(window) { frameData ->
+                if (frameData.isJank) {
+                    Log.w("JankStats", "Janky frame: durationUiNanos=${frameData.frameDurationUiNanos}")
+                }
             }
+        }.getOrElse { throwable ->
+            Log.w("MainActivity", "Unable to initialize JankStats; continuing without it", throwable)
+            null
         }
         enableEdgeToEdge()
         setContent {
