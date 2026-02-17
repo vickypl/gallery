@@ -89,18 +89,27 @@ class MediaPagingSource(
             val sortOrder = "${MediaStore.Files.FileColumns.DATE_MODIFIED} DESC, ${MediaStore.Files.FileColumns._ID} DESC"
 
             val items = mutableListOf<MediaItem>()
-            contentResolver.query(
-                MediaStore.Files.getContentUri("external"),
-                projection,
-                selection,
-                args,
-                "$sortOrder LIMIT $limit"
-            )?.use { cursor ->
-                val idCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns._ID)
-                val typeCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.MEDIA_TYPE)
-                while (cursor.moveToNext()) {
-                    val id = cursor.getLong(idCol)
-                    val mediaType = cursor.getInt(typeCol)
+            val queryArgs = Bundle().apply {
+                putString(ContentResolver.QUERY_ARG_SQL_SELECTION, selection)
+                putStringArray(ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS, args)
+                putString(ContentResolver.QUERY_ARG_SQL_SORT_ORDER, sortOrder)
+                putString(ContentResolver.QUERY_ARG_SQL_LIMIT, limit.toString())
+            }
+
+            val filesUri = MediaStore.Files.getContentUri("external")
+            val cursor = runCatching {
+                contentResolver.query(filesUri, projection, queryArgs, null)
+            }.getOrElse {
+                Log.w("MediaPagingSource", "Falling back to legacy query path", it)
+                contentResolver.query(filesUri, projection, selection, args, "$sortOrder LIMIT $limit")
+            }
+
+            cursor?.use { c ->
+                val idCol = c.getColumnIndexOrThrow(MediaStore.Files.FileColumns._ID)
+                val typeCol = c.getColumnIndexOrThrow(MediaStore.Files.FileColumns.MEDIA_TYPE)
+                while (c.moveToNext()) {
+                    val id = c.getLong(idCol)
+                    val mediaType = c.getInt(typeCol)
                     val (baseUri, isVideo) = when (mediaType) {
                         MediaStore.Files.FileColumns.MEDIA_TYPE_IMAGE -> MediaStore.Images.Media.EXTERNAL_CONTENT_URI to false
                         MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO -> MediaStore.Video.Media.EXTERNAL_CONTENT_URI to true
@@ -164,7 +173,11 @@ class MainActivity : ComponentActivity() {
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) {
-        pushPermissionsToViewModel()
+        if (hasAnyMediaPermission()) {
+            pushPermissionsToViewModel()
+        } else {
+            Log.w("MainActivity", "Media permission denied; gallery will remain empty")
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
