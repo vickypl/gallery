@@ -40,6 +40,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.pager.HorizontalPager
@@ -1303,10 +1304,16 @@ private fun FullscreenMediaViewer(
         }
     }
 
-    LaunchedEffect(pagerState.currentPage) {
+    LaunchedEffect(safeInitialIndex) {
+        if (pagerState.currentPage != safeInitialIndex) {
+            pagerState.scrollToPage(safeInitialIndex)
+        }
+    }
+
+    LaunchedEffect(pagerState.settledPage, mediaItems) {
         val preloadTargets = listOfNotNull(
-            mediaItems.getOrNull(pagerState.currentPage - 1),
-            mediaItems.getOrNull(pagerState.currentPage + 1)
+            mediaItems.getOrNull(pagerState.settledPage - 1),
+            mediaItems.getOrNull(pagerState.settledPage + 1)
         ).filter { it.type == MediaType.PHOTO }
 
         preloadTargets.forEach { mediaItem ->
@@ -1330,7 +1337,9 @@ private fun FullscreenMediaViewer(
         Box(modifier = Modifier.fillMaxSize()) {
             HorizontalPager(
                 state = pagerState,
-                modifier = Modifier.fillMaxSize()
+                modifier = Modifier.fillMaxSize(),
+                beyondViewportPageCount = 1,
+                key = { index -> mediaItems[index].stableId }
             ) { page ->
                 val mediaItem = mediaItems[page]
                 if (mediaItem.type == MediaType.PHOTO) {
@@ -1338,7 +1347,7 @@ private fun FullscreenMediaViewer(
                         ImageRequest.Builder(context)
                             .data(mediaItem.uri)
                             .allowHardware(true)
-                            .crossfade(true)
+                            .crossfade(false)
                             .build()
                     }
                     AsyncImage(
@@ -1349,7 +1358,10 @@ private fun FullscreenMediaViewer(
                         contentScale = ContentScale.Fit
                     )
                 } else {
-                    FullscreenVideoPlayer(videoUri = mediaItem.uri)
+                    FullscreenVideoPlayer(
+                        videoUri = mediaItem.uri,
+                        isActive = page == pagerState.currentPage
+                    )
                 }
             }
 
@@ -1357,7 +1369,9 @@ private fun FullscreenMediaViewer(
                 modifier = Modifier
                     .align(Alignment.TopCenter)
                     .fillMaxWidth()
-                    .padding(start = 12.dp, end = 12.dp, top = 10.dp),
+                    .statusBarsPadding()
+                    .background(Color(0x55000000))
+                    .padding(start = 12.dp, end = 12.dp, top = 10.dp, bottom = 6.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 TextButton(onClick = onDismiss) {
@@ -1377,6 +1391,7 @@ private fun FullscreenMediaViewer(
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
                         .fillMaxWidth()
+                        .background(Color(0x55000000))
                         .navigationBarsPadding()
                         .padding(start = 20.dp, end = 20.dp, top = 16.dp, bottom = 12.dp),
                     verticalAlignment = Alignment.CenterVertically
@@ -1406,7 +1421,7 @@ private fun FullscreenMediaViewer(
 }
 
 @Composable
-private fun FullscreenVideoPlayer(videoUri: Uri) {
+private fun FullscreenVideoPlayer(videoUri: Uri, isActive: Boolean) {
     AndroidView(
         modifier = Modifier
             .fillMaxSize(),
@@ -1427,8 +1442,10 @@ private fun FullscreenVideoPlayer(videoUri: Uri) {
                 videoView.setVideoURI(videoUri)
                 videoView.tag = videoUri
             }
-            if (!videoView.isPlaying) {
+            if (isActive && !videoView.isPlaying) {
                 videoView.start()
+            } else if (!isActive && videoView.isPlaying) {
+                videoView.pause()
             }
         }
     )
