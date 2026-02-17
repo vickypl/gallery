@@ -20,6 +20,11 @@
         android:supportsRtl="true"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
         <activity
+            android:name=".PreviewActivity"
+            android:exported="false"
+            android:hardwareAccelerated="true" />
+
+        <activity
             android:name=".MainActivity"
             android:hardwareAccelerated="true"
             android:exported="true">
