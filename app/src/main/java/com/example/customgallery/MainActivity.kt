@@ -97,16 +97,35 @@ class MediaPagingSource(
             val sortOrder = "${MediaStore.Files.FileColumns.DATE_MODIFIED} DESC, ${MediaStore.Files.FileColumns._ID} DESC"
 
             val items = mutableListOf<MediaItem>()
-            contentResolver.query(
-                MediaStore.Files.getContentUri("external"),
-                projection,
-                selection,
-                args,
-                "$sortOrder LIMIT $limit"
-            )?.use { c ->
+            val collection = MediaStore.Files.getContentUri("external")
+            val queryArgs = Bundle().apply {
+                putString(ContentResolver.QUERY_ARG_SQL_SELECTION, selection)
+                putStringArray(ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS, args)
+                putStringArray(
+                    ContentResolver.QUERY_ARG_SORT_COLUMNS,
+                    arrayOf(MediaStore.Files.FileColumns.DATE_MODIFIED, MediaStore.Files.FileColumns._ID)
+                )
+                putInt(ContentResolver.QUERY_ARG_SORT_DIRECTION, ContentResolver.QUERY_SORT_DIRECTION_DESCENDING)
+                putInt(ContentResolver.QUERY_ARG_LIMIT, limit)
+            }
+
+            val cursor = runCatching {
+                contentResolver.query(collection, projection, queryArgs, null)
+            }.getOrElse { modernQueryError ->
+                Log.w("MediaPagingSource", "QueryArgs query failed, falling back", modernQueryError)
+                contentResolver.query(
+                    collection,
+                    projection,
+                    selection,
+                    args,
+                    sortOrder
+                )
+            }
+
+            cursor?.use { c ->
                 val idCol = c.getColumnIndexOrThrow(MediaStore.Files.FileColumns._ID)
                 val typeCol = c.getColumnIndexOrThrow(MediaStore.Files.FileColumns.MEDIA_TYPE)
-                while (c.moveToNext()) {
+                while (c.moveToNext() && items.size < limit) {
                     val id = c.getLong(idCol)
                     val mediaType = c.getInt(typeCol)
                     val (baseUri, isVideo) = when (mediaType) {
@@ -265,6 +284,8 @@ class MainActivity : ComponentActivity() {
             !hasPermission -> {
                 emptyStateText.visibility = View.VISIBLE
                 grantPermissionButton.visibility = View.VISIBLE
+                grantPermissionButton.text = "Grant permission"
+                grantPermissionButton.setOnClickListener { requestMediaPermissions() }
                 emptyStateText.text = "Allow media access to show photos and videos."
             }
 
@@ -276,8 +297,10 @@ class MainActivity : ComponentActivity() {
 
             refreshState is LoadState.Error && showEmpty -> {
                 emptyStateText.visibility = View.VISIBLE
-                grantPermissionButton.visibility = View.GONE
-                emptyStateText.text = "Unable to load gallery. Please reopen app."
+                grantPermissionButton.visibility = View.VISIBLE
+                grantPermissionButton.text = "Retry"
+                grantPermissionButton.setOnClickListener { adapter.retry() }
+                emptyStateText.text = "Unable to load gallery. Tap retry."
             }
 
             showEmpty -> {
