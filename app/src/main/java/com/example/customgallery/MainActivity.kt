@@ -168,6 +168,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var deleteButton: ImageButton
     private lateinit var emptyStateText: TextView
     private lateinit var grantPermissionButton: Button
+    private var refreshState: LoadState = LoadState.NotLoading(endOfPaginationReached = false)
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -213,7 +214,8 @@ class MainActivity : ComponentActivity() {
         }
 
         lifecycleScope.launchWhenStarted {
-            adapter.loadStateFlow.collectLatest {
+            adapter.loadStateFlow.collectLatest { state ->
+                refreshState = state.refresh
                 updateEmptyState()
             }
         }
@@ -258,7 +260,6 @@ class MainActivity : ComponentActivity() {
 
     private fun updateEmptyState() {
         val hasPermission = hasAnyMediaPermission()
-        val refreshState = adapter.loadState.refresh
         val showEmpty = adapter.itemCount == 0
         when {
             !hasPermission -> {
