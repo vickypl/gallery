@@ -15,6 +15,7 @@ import android.util.Log
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.widget.Button
 import android.widget.ImageButton
 import android.widget.ImageView
 import android.widget.TextView
@@ -33,6 +34,7 @@ import androidx.paging.PagingData
 import androidx.paging.PagingDataAdapter
 import androidx.paging.PagingSource
 import androidx.paging.PagingState
+import androidx.paging.LoadState
 import androidx.paging.cachedIn
 import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.GridLayoutManager
@@ -164,11 +166,16 @@ class MainActivity : ComponentActivity() {
     private lateinit var selectedCountText: TextView
     private lateinit var shareButton: ImageButton
     private lateinit var deleteButton: ImageButton
+    private lateinit var emptyStateText: TextView
+    private lateinit var grantPermissionButton: Button
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) {
-        if (hasAnyMediaPermission()) pushPermissionsToViewModel()
+        if (hasAnyMediaPermission()) {
+            pushPermissionsToViewModel()
+        }
+        updateEmptyState()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -178,6 +185,8 @@ class MainActivity : ComponentActivity() {
         selectedCountText = findViewById(R.id.selectedCountText)
         shareButton = findViewById(R.id.shareButton)
         deleteButton = findViewById(R.id.deleteButton)
+        emptyStateText = findViewById(R.id.emptyStateText)
+        grantPermissionButton = findViewById(R.id.grantPermissionButton)
 
         Glide.get(this).setMemoryCategory(com.bumptech.glide.MemoryCategory.HIGH)
 
@@ -196,13 +205,25 @@ class MainActivity : ComponentActivity() {
 
         shareButton.setOnClickListener { shareSelected() }
         deleteButton.setOnClickListener { deleteSelected() }
+        grantPermissionButton.setOnClickListener { requestMediaPermissions() }
         renderSelectionUi()
 
         lifecycleScope.launchWhenStarted {
             viewModel.mediaFlow.collectLatest { adapter.submitData(it) }
         }
 
-        if (hasAnyMediaPermission()) pushPermissionsToViewModel() else requestMediaPermissions()
+        lifecycleScope.launchWhenStarted {
+            adapter.loadStateFlow.collectLatest {
+                updateEmptyState()
+            }
+        }
+
+        if (hasAnyMediaPermission()) {
+            pushPermissionsToViewModel()
+        } else {
+            requestMediaPermissions()
+        }
+        updateEmptyState()
     }
 
     private fun onMediaClick(item: MediaItem) {
@@ -233,6 +254,42 @@ class MainActivity : ComponentActivity() {
         shareButton.visibility = if (hasSelection) View.VISIBLE else View.GONE
         deleteButton.visibility = if (hasSelection) View.VISIBLE else View.GONE
         selectedCountText.text = "${selectedIds.size} selected"
+    }
+
+    private fun updateEmptyState() {
+        val hasPermission = hasAnyMediaPermission()
+        val refreshState = adapter.loadState.refresh
+        val showEmpty = adapter.itemCount == 0
+        when {
+            !hasPermission -> {
+                emptyStateText.visibility = View.VISIBLE
+                grantPermissionButton.visibility = View.VISIBLE
+                emptyStateText.text = "Allow media access to show photos and videos."
+            }
+
+            refreshState is LoadState.Loading -> {
+                emptyStateText.visibility = View.VISIBLE
+                grantPermissionButton.visibility = View.GONE
+                emptyStateText.text = "Loading media..."
+            }
+
+            refreshState is LoadState.Error && showEmpty -> {
+                emptyStateText.visibility = View.VISIBLE
+                grantPermissionButton.visibility = View.GONE
+                emptyStateText.text = "Unable to load gallery. Please reopen app."
+            }
+
+            showEmpty -> {
+                emptyStateText.visibility = View.VISIBLE
+                grantPermissionButton.visibility = View.GONE
+                emptyStateText.text = "No photos or videos found."
+            }
+
+            else -> {
+                emptyStateText.visibility = View.GONE
+                grantPermissionButton.visibility = View.GONE
+            }
+        }
     }
 
     private fun shareSelected() {

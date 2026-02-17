@@ -53,4 +53,29 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toBottomOf="@id/actionBar" />
 
+    <TextView
+        android:id="@+id/emptyStateText"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:gravity="center"
+        android:padding="16dp"
+        android:textColor="@android:color/darker_gray"
+        android:textSize="16sp"
+        android:visibility="gone"
+        app:layout_constraintBottom_toBottomOf="@id/mediaRecyclerView"
+        app:layout_constraintEnd_toEndOf="@id/mediaRecyclerView"
+        app:layout_constraintStart_toStartOf="@id/mediaRecyclerView"
+        app:layout_constraintTop_toTopOf="@id/mediaRecyclerView" />
+
+    <Button
+        android:id="@+id/grantPermissionButton"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp"
+        android:text="Grant permission"
+        android:visibility="gone"
+        app:layout_constraintEnd_toEndOf="@id/mediaRecyclerView"
+        app:layout_constraintStart_toStartOf="@id/mediaRecyclerView"
+        app:layout_constraintTop_toBottomOf="@id/emptyStateText" />
+
 </androidx.constraintlayout.widget.ConstraintLayout>
