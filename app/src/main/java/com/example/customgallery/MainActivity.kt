@@ -3,7 +3,6 @@ package com.example.customgallery
 import android.Manifest
 import android.content.ContentResolver
 import android.content.ContentUris
-import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -28,13 +27,13 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.viewModelScope
+import androidx.paging.LoadState
 import androidx.paging.Pager
 import androidx.paging.PagingConfig
 import androidx.paging.PagingData
 import androidx.paging.PagingDataAdapter
 import androidx.paging.PagingSource
 import androidx.paging.PagingState
-import androidx.paging.LoadState
 import androidx.paging.cachedIn
 import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.GridLayoutManager
@@ -62,15 +61,15 @@ class MediaPagingSource(
     private val contentResolver: ContentResolver,
     private val canReadImages: Boolean,
     private val canReadVideos: Boolean
-) : PagingSource<Long, MediaItem>() {
+) : PagingSource<Int, MediaItem>() {
 
-    override suspend fun load(params: LoadParams<Long>): LoadResult<Long, MediaItem> {
+    override suspend fun load(params: LoadParams<Int>): LoadResult<Int, MediaItem> {
         return try {
             if (!canReadImages && !canReadVideos) {
                 return LoadResult.Page(data = emptyList(), prevKey = null, nextKey = null)
             }
 
-            val startExclusive = params.key ?: Long.MAX_VALUE
+            val offset = params.key ?: 0
             val limit = params.loadSize.coerceIn(100, 200)
 
             val projection = arrayOf(
@@ -84,16 +83,12 @@ class MediaPagingSource(
             }
 
             val selection = buildString {
-                append("${MediaStore.Files.FileColumns._ID} < ?")
-                append(" AND ${MediaStore.Files.FileColumns.MEDIA_TYPE} IN (")
+                append("${MediaStore.Files.FileColumns.MEDIA_TYPE} IN (")
                 append(mediaTypes.joinToString(",") { "?" })
                 append(")")
             }
 
-            val args = mutableListOf(startExclusive.toString()).apply {
-                addAll(mediaTypes.map { it.toString() })
-            }.toTypedArray()
-
+            val args = mediaTypes.map { it.toString() }.toTypedArray()
             val sortOrder = "${MediaStore.Files.FileColumns.DATE_MODIFIED} DESC, ${MediaStore.Files.FileColumns._ID} DESC"
 
             val items = mutableListOf<MediaItem>()
@@ -107,6 +102,7 @@ class MediaPagingSource(
                 )
                 putInt(ContentResolver.QUERY_ARG_SORT_DIRECTION, ContentResolver.QUERY_SORT_DIRECTION_DESCENDING)
                 putInt(ContentResolver.QUERY_ARG_LIMIT, limit)
+                putInt(ContentResolver.QUERY_ARG_OFFSET, offset)
             }
 
             val cursor = runCatching {
@@ -118,7 +114,7 @@ class MediaPagingSource(
                     projection,
                     selection,
                     args,
-                    sortOrder
+                    "$sortOrder LIMIT $limit OFFSET $offset"
                 )
             }
 
@@ -133,19 +129,28 @@ class MediaPagingSource(
                         MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO -> MediaStore.Video.Media.EXTERNAL_CONTENT_URI to true
                         else -> continue
                     }
-                    items += MediaItem(id = id, contentUri = ContentUris.withAppendedId(baseUri, id), isVideo = isVideo)
+                    items += MediaItem(
+                        id = id,
+                        contentUri = ContentUris.withAppendedId(baseUri, id),
+                        isVideo = isVideo
+                    )
                 }
             }
 
-            val nextKey = items.lastOrNull()?.id
-            LoadResult.Page(data = items, prevKey = null, nextKey = nextKey)
+            val nextKey = if (items.size < limit) null else offset + items.size
+            val prevKey = if (offset == 0) null else (offset - limit).coerceAtLeast(0)
+            LoadResult.Page(data = items, prevKey = prevKey, nextKey = nextKey)
         } catch (t: Throwable) {
             Log.e("MediaPagingSource", "Media query failure", t)
             LoadResult.Error(t)
         }
     }
 
-    override fun getRefreshKey(state: PagingState<Long, MediaItem>): Long? = null
+    override fun getRefreshKey(state: PagingState<Int, MediaItem>): Int? {
+        val anchorPos = state.anchorPosition ?: return null
+        val page = state.closestPageToPosition(anchorPos) ?: return null
+        return page.prevKey?.plus(PAGE_SIZE) ?: page.nextKey?.minus(PAGE_SIZE)
+    }
 }
 
 class GalleryViewModel(private val contentResolver: ContentResolver) : ViewModel() {
@@ -252,9 +257,16 @@ class MainActivity : ComponentActivity() {
             toggleSelection(item)
             return
         }
+
+        val loadedItems = adapter.snapshot().items.filterNotNull()
+        val uris = ArrayList(loadedItems.map { it.contentUri.toString() })
+        val videos = BooleanArray(loadedItems.size) { idx -> loadedItems[idx].isVideo }
+        val startIndex = loadedItems.indexOfFirst { it.stableId == item.stableId }.coerceAtLeast(0)
+
         val intent = Intent(this, PreviewActivity::class.java)
-            .putExtra("uri", item.contentUri.toString())
-            .putExtra("isVideo", item.isVideo)
+            .putStringArrayListExtra(PreviewActivity.EXTRA_URIS, uris)
+            .putExtra(PreviewActivity.EXTRA_IS_VIDEOS, videos)
+            .putExtra(PreviewActivity.EXTRA_START_INDEX, startIndex)
         startActivity(intent)
     }
 
