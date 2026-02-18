@@ -1,12 +1,18 @@
 package com.example.customgallery
 
+import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.widget.ImageButton
 import android.widget.ImageView
+import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.updateLayoutParams
 import androidx.media3.common.MediaItem
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.AspectRatioFrameLayout
@@ -34,11 +40,55 @@ class PreviewActivity : ComponentActivity() {
             val uri = Uri.parse(value)
             val isVideo = isVideos?.getOrNull(index) ?: false
             PreviewItem(uri = uri, isVideo = isVideo)
-        }
+        }.toMutableList()
 
         val pager = findViewById<ViewPager2>(R.id.previewPager)
-        pager.adapter = PreviewPagerAdapter(items)
+        val actionBar = findViewById<View>(R.id.previewActionsBar)
+        val shareButton = findViewById<ImageButton>(R.id.previewShareButton)
+        val albumButton = findViewById<ImageButton>(R.id.previewAlbumButton)
+        val deleteButton = findViewById<ImageButton>(R.id.previewDeleteButton)
+        val adapter = PreviewPagerAdapter(items)
+
+        pager.adapter = adapter
         pager.setCurrentItem(startIndex.coerceIn(0, items.lastIndex), false)
+
+        ViewCompat.setOnApplyWindowInsetsListener(actionBar) { view, insets ->
+            val navBarInset = insets.getInsets(WindowInsetsCompat.Type.navigationBars()).bottom
+            view.updateLayoutParams<ViewGroup.MarginLayoutParams> {
+                bottomMargin = resources.getDimensionPixelSize(R.dimen.preview_actions_bottom_margin) + navBarInset
+            }
+            insets
+        }
+        ViewCompat.requestApplyInsets(actionBar)
+
+        shareButton.setOnClickListener {
+            val currentItem = items.getOrNull(pager.currentItem) ?: return@setOnClickListener
+            val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                type = if (currentItem.isVideo) "video/*" else "image/*"
+                putExtra(Intent.EXTRA_STREAM, currentItem.uri)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            startActivity(Intent.createChooser(shareIntent, getString(R.string.preview_share)))
+        }
+
+        albumButton.setOnClickListener { finish() }
+
+        deleteButton.setOnClickListener {
+            val position = pager.currentItem
+            val itemToDelete = items.getOrNull(position) ?: return@setOnClickListener
+            val deletedCount = contentResolver.delete(itemToDelete.uri, null, null)
+            if (deletedCount > 0) {
+                adapter.removeAt(position)
+                if (items.isEmpty()) {
+                    finish()
+                } else {
+                    val nextIndex = position.coerceAtMost(items.lastIndex)
+                    pager.setCurrentItem(nextIndex, false)
+                }
+            } else {
+                Toast.makeText(this, R.string.preview_delete_failed, Toast.LENGTH_SHORT).show()
+            }
+        }
     }
 
     companion object {
@@ -54,7 +104,7 @@ data class PreviewItem(
 )
 
 private class PreviewPagerAdapter(
-    private val items: List<PreviewItem>
+    private val items: MutableList<PreviewItem>
 ) : RecyclerView.Adapter<PreviewPagerAdapter.PreviewPageViewHolder>() {
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): PreviewPageViewHolder {
@@ -76,6 +126,12 @@ private class PreviewPagerAdapter(
     }
 
     override fun getItemCount(): Int = items.size
+
+    fun removeAt(position: Int) {
+        if (position !in items.indices) return
+        items.removeAt(position)
+        notifyItemRemoved(position)
+    }
 
     class PreviewPageViewHolder(view: View) : RecyclerView.ViewHolder(view) {
         private val image: ImageView = view.findViewById(R.id.previewImage)

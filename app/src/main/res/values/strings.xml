@@ -1,3 +1,7 @@
 <resources>
     <string name="app_name">Prism Gallery</string>
+    <string name="preview_share">Share</string>
+    <string name="preview_album">Album</string>
+    <string name="preview_delete">Delete</string>
+    <string name="preview_delete_failed">Unable to delete this item.</string>
 </resources>
