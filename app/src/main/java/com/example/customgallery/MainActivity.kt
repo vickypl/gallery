@@ -96,13 +96,8 @@ class MediaPagingSource(
             val queryArgs = Bundle().apply {
                 putString(ContentResolver.QUERY_ARG_SQL_SELECTION, selection)
                 putStringArray(ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS, args)
-                putStringArray(
-                    ContentResolver.QUERY_ARG_SORT_COLUMNS,
-                    arrayOf(MediaStore.Files.FileColumns.DATE_MODIFIED, MediaStore.Files.FileColumns._ID)
-                )
-                putInt(ContentResolver.QUERY_ARG_SORT_DIRECTION, ContentResolver.QUERY_SORT_DIRECTION_DESCENDING)
-                putInt(ContentResolver.QUERY_ARG_LIMIT, limit)
-                putInt(ContentResolver.QUERY_ARG_OFFSET, offset)
+                putString(ContentResolver.QUERY_ARG_SQL_SORT_ORDER, sortOrder)
+                putString(ContentResolver.QUERY_ARG_SQL_LIMIT, "$limit OFFSET $offset")
             }
 
             val cursor = runCatching {

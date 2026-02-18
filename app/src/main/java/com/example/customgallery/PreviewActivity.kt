@@ -6,8 +6,11 @@ import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.widget.ImageView
-import android.widget.VideoView
 import androidx.activity.ComponentActivity
+import androidx.media3.common.MediaItem
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.ui.AspectRatioFrameLayout
+import androidx.media3.ui.PlayerView
 import androidx.recyclerview.widget.RecyclerView
 import androidx.viewpager2.widget.ViewPager2
 import com.bumptech.glide.Glide
@@ -68,22 +71,33 @@ private class PreviewPagerAdapter(
         super.onViewRecycled(holder)
     }
 
+    override fun onDetachedFromRecyclerView(recyclerView: RecyclerView) {
+        super.onDetachedFromRecyclerView(recyclerView)
+    }
+
     override fun getItemCount(): Int = items.size
 
     class PreviewPageViewHolder(view: View) : RecyclerView.ViewHolder(view) {
         private val image: ImageView = view.findViewById(R.id.previewImage)
-        private val video: VideoView = view.findViewById(R.id.previewVideo)
+        private val playerView: PlayerView = view.findViewById(R.id.previewPlayerView)
+        private var player: ExoPlayer? = null
 
         fun bind(item: PreviewItem) {
             if (item.isVideo) {
                 Glide.with(itemView).clear(image)
                 image.visibility = View.GONE
-                video.visibility = View.VISIBLE
-                video.setVideoURI(item.uri)
-                video.start()
+                playerView.visibility = View.VISIBLE
+                val localPlayer = player ?: ExoPlayer.Builder(itemView.context).build().also {
+                    player = it
+                    playerView.player = it
+                }
+                playerView.resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
+                localPlayer.setMediaItem(MediaItem.fromUri(item.uri))
+                localPlayer.prepare()
+                localPlayer.playWhenReady = true
             } else {
-                video.stopPlayback()
-                video.visibility = View.GONE
+                releasePlayer()
+                playerView.visibility = View.GONE
                 image.visibility = View.VISIBLE
                 Glide.with(itemView).load(item.uri).into(image)
             }
@@ -91,7 +105,13 @@ private class PreviewPagerAdapter(
 
         fun clear() {
             Glide.with(itemView).clear(image)
-            video.stopPlayback()
+            releasePlayer()
+        }
+
+        private fun releasePlayer() {
+            player?.release()
+            player = null
+            playerView.player = null
         }
     }
 }
