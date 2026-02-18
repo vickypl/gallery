@@ -3,6 +3,7 @@ package com.example.customgallery
 import android.Manifest
 import android.content.ContentResolver
 import android.content.ContentUris
+import android.app.RecoverableSecurityException
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -20,6 +21,7 @@ import android.widget.ImageView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.core.content.ContextCompat
@@ -209,6 +211,8 @@ class MainActivity : ComponentActivity() {
     private lateinit var emptyStateText: TextView
     private lateinit var grantPermissionButton: Button
     private var refreshState: LoadState = LoadState.NotLoading(endOfPaginationReached = false)
+    private var pendingDeleteUris: ArrayList<Uri>? = null
+
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -225,6 +229,16 @@ class MainActivity : ComponentActivity() {
         val deleted = result.data?.getBooleanExtra(PreviewActivity.EXTRA_DELETED, false) == true
         if (result.resultCode == RESULT_OK && deleted) {
             adapter.refresh()
+        }
+    }
+
+    private val deletePermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.StartIntentSenderForResult()
+    ) { result ->
+        val uris = pendingDeleteUris ?: return@registerForActivityResult
+        pendingDeleteUris = null
+        if (result.resultCode == RESULT_OK) {
+            onDeleteCompleted(successCount = uris.size, requestedCount = uris.size)
         }
     }
 
@@ -380,17 +394,35 @@ class MainActivity : ComponentActivity() {
 
     private fun deleteSelected() {
         if (selectedItems.isEmpty()) return
+        val uris = ArrayList(selectedItems.values.map { it.contentUri })
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            val request = MediaStore.createDeleteRequest(contentResolver, uris)
+            pendingDeleteUris = uris
+            deletePermissionLauncher.launch(
+                IntentSenderRequest.Builder(request.intentSender).build()
+            )
+            return
+        }
+
         var success = 0
-        selectedItems.values.forEach { item ->
-            runCatching {
-                contentResolver.delete(item.contentUri, null, null)
-            }.onSuccess {
-                success += 1
-            }.onFailure {
-                Log.w("MainActivity", "Delete failed for ${item.contentUri}", it)
+        uris.forEach { uri ->
+            try {
+                val deleted = contentResolver.delete(uri, null, null)
+                if (deleted > 0) success += 1
+            } catch (securityException: SecurityException) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && securityException is RecoverableSecurityException) {
+                    Log.w("MainActivity", "Delete requires user approval on Android Q: $uri", securityException)
+                } else {
+                    Log.w("MainActivity", "Delete failed for $uri", securityException)
+                }
             }
         }
-        Toast.makeText(this, "Deleted $success/${selectedItems.size}", Toast.LENGTH_SHORT).show()
+        onDeleteCompleted(successCount = success, requestedCount = uris.size)
+    }
+
+    private fun onDeleteCompleted(successCount: Int, requestedCount: Int) {
+        Toast.makeText(this, "Deleted $successCount/$requestedCount", Toast.LENGTH_SHORT).show()
         selectedIds.clear()
         selectedItems.clear()
         adapter.setSelectedIds(emptySet())
