@@ -25,6 +25,11 @@
             android:hardwareAccelerated="true" />
 
         <activity
+            android:name=".AlbumsActivity"
+            android:exported="false"
+            android:hardwareAccelerated="true" />
+
+        <activity
             android:name=".MainActivity"
             android:hardwareAccelerated="true"
             android:exported="true">

@@ -1,3 +1,12 @@
 <resources>
-    <string name="app_name">Prism Gallery</string>
+    <string name="app_name">Vallery</string>
+    <string name="preview_share">Share</string>
+    <string name="preview_album">Album</string>
+    <string name="preview_delete">Delete</string>
+    <string name="preview_delete_failed">Unable to delete this item.</string>
+    <string name="albums_title">Albums</string>
+    <string name="albums_empty">No albums found.</string>
+    <string name="albums_permission_required">Allow media permissions to load albums.</string>
+    <string name="albums_unknown">Unknown folder</string>
+    <string name="albums_count_format">%1$d items</string>
 </resources>

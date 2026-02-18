@@ -2,45 +2,23 @@
 <androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
-    android:layout_height="match_parent">
+    android:layout_height="match_parent"
+    android:background="#101217">
 
-    <LinearLayout
-        android:id="@+id/actionBar"
+    <TextView
+        android:id="@+id/selectedCountText"
         android:layout_width="0dp"
         android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:padding="8dp"
+        android:layout_marginStart="16dp"
+        android:layout_marginTop="12dp"
+        android:layout_marginEnd="16dp"
+        android:padding="4dp"
+        android:textColor="@android:color/white"
+        android:textStyle="bold"
+        android:visibility="gone"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toTopOf="parent">
-
-        <TextView
-            android:id="@+id/selectedCountText"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:textColor="@android:color/black"
-            android:textStyle="bold"
-            android:visibility="gone" />
-
-        <ImageButton
-            android:id="@+id/shareButton"
-            android:layout_width="40dp"
-            android:layout_height="40dp"
-            android:background="@android:color/transparent"
-            android:contentDescription="Share"
-            android:src="@android:drawable/ic_menu_share"
-            android:visibility="gone" />
-
-        <ImageButton
-            android:id="@+id/deleteButton"
-            android:layout_width="40dp"
-            android:layout_height="40dp"
-            android:background="@android:color/transparent"
-            android:contentDescription="Delete"
-            android:src="@android:drawable/ic_menu_delete"
-            android:visibility="gone" />
-    </LinearLayout>
+        app:layout_constraintTop_toTopOf="parent" />
 
     <androidx.recyclerview.widget.RecyclerView
         android:id="@+id/mediaRecyclerView"
@@ -48,10 +26,11 @@
         android:layout_height="0dp"
         android:clipToPadding="false"
         android:padding="4dp"
+        android:paddingBottom="92dp"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@id/actionBar" />
+        app:layout_constraintTop_toBottomOf="@id/selectedCountText" />
 
     <TextView
         android:id="@+id/emptyStateText"
@@ -59,7 +38,7 @@
         android:layout_height="wrap_content"
         android:gravity="center"
         android:padding="16dp"
-        android:textColor="@android:color/darker_gray"
+        android:textColor="#B9C0CB"
         android:textSize="16sp"
         android:visibility="gone"
         app:layout_constraintBottom_toBottomOf="@id/mediaRecyclerView"
@@ -77,5 +56,56 @@
         app:layout_constraintEnd_toEndOf="@id/mediaRecyclerView"
         app:layout_constraintStart_toStartOf="@id/mediaRecyclerView"
         app:layout_constraintTop_toBottomOf="@id/emptyStateText" />
+
+    <androidx.constraintlayout.widget.ConstraintLayout
+        android:id="@+id/gridActionsBar"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="20dp"
+        android:layout_marginEnd="20dp"
+        android:layout_marginBottom="16dp"
+        android:paddingVertical="6dp"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent">
+
+        <ImageButton
+            android:id="@+id/shareButton"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:background="@drawable/bg_preview_share"
+            android:contentDescription="@string/preview_share"
+            android:padding="10dp"
+            android:src="@android:drawable/ic_menu_share"
+            android:tint="@android:color/white"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintTop_toTopOf="parent" />
+
+        <ImageButton
+            android:id="@+id/albumButton"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:background="@drawable/bg_preview_album"
+            android:contentDescription="@string/preview_album"
+            android:padding="10dp"
+            android:src="@android:drawable/ic_menu_gallery"
+            android:tint="@android:color/white"
+            app:layout_constraintEnd_toEndOf="parent"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintTop_toTopOf="parent" />
+
+        <ImageButton
+            android:id="@+id/deleteButton"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:background="@drawable/bg_preview_delete"
+            android:contentDescription="@string/preview_delete"
+            android:padding="10dp"
+            android:src="@android:drawable/ic_menu_delete"
+            android:tint="@android:color/white"
+            app:layout_constraintEnd_toEndOf="parent"
+            app:layout_constraintTop_toTopOf="parent" />
+
+    </androidx.constraintlayout.widget.ConstraintLayout>
 
 </androidx.constraintlayout.widget.ConstraintLayout>

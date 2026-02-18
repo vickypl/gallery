@@ -3,6 +3,7 @@ package com.example.customgallery
 import android.Manifest
 import android.content.ContentResolver
 import android.content.ContentUris
+import android.app.RecoverableSecurityException
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -20,9 +21,13 @@ import android.widget.ImageView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.core.content.ContextCompat
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.updateLayoutParams
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.lifecycleScope
@@ -48,6 +53,7 @@ import kotlinx.coroutines.flow.update
 
 private const val PAGE_SIZE = 150
 private const val THUMB_SIZE = 400
+private const val NO_BUCKET_FILTER = Long.MIN_VALUE
 
 data class MediaItem(
     val id: Long,
@@ -60,7 +66,8 @@ data class MediaItem(
 class MediaPagingSource(
     private val contentResolver: ContentResolver,
     private val canReadImages: Boolean,
-    private val canReadVideos: Boolean
+    private val canReadVideos: Boolean,
+    private val bucketId: Long?
 ) : PagingSource<Int, MediaItem>() {
 
     override suspend fun load(params: LoadParams<Int>): LoadResult<Int, MediaItem> {
@@ -82,13 +89,18 @@ class MediaPagingSource(
                 if (canReadVideos) add(MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO)
             }
 
+            val selectionArgs = mediaTypes.map { it.toString() }.toMutableList()
             val selection = buildString {
                 append("${MediaStore.Files.FileColumns.MEDIA_TYPE} IN (")
                 append(mediaTypes.joinToString(",") { "?" })
                 append(")")
+                bucketId?.let {
+                    append(" AND ${MediaStore.Files.FileColumns.BUCKET_ID} = ?")
+                    selectionArgs += it.toString()
+                }
             }
 
-            val args = mediaTypes.map { it.toString() }.toTypedArray()
+            val args = selectionArgs.toTypedArray()
             val sortOrder = "${MediaStore.Files.FileColumns.DATE_MODIFIED} DESC, ${MediaStore.Files.FileColumns._ID} DESC"
 
             val items = mutableListOf<MediaItem>()
@@ -148,7 +160,10 @@ class MediaPagingSource(
     }
 }
 
-class GalleryViewModel(private val contentResolver: ContentResolver) : ViewModel() {
+class GalleryViewModel(
+    private val contentResolver: ContentResolver,
+    private val bucketId: Long?
+) : ViewModel() {
     private val permissionState = MutableStateFlow(false to false)
 
     val mediaFlow: Flow<PagingData<MediaItem>> = permissionState.flatMapLatest { (images, videos) ->
@@ -159,7 +174,7 @@ class GalleryViewModel(private val contentResolver: ContentResolver) : ViewModel
                 prefetchDistance = 50,
                 enablePlaceholders = false
             ),
-            pagingSourceFactory = { MediaPagingSource(contentResolver, images, videos) }
+            pagingSourceFactory = { MediaPagingSource(contentResolver, images, videos, bucketId) }
         ).flow
     }.cachedIn(viewModelScope)
 
@@ -168,15 +183,22 @@ class GalleryViewModel(private val contentResolver: ContentResolver) : ViewModel
     }
 }
 
-class GalleryViewModelFactory(private val contentResolver: ContentResolver) : ViewModelProvider.Factory {
+class GalleryViewModelFactory(
+    private val contentResolver: ContentResolver,
+    private val bucketId: Long?
+) : ViewModelProvider.Factory {
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
         @Suppress("UNCHECKED_CAST")
-        return GalleryViewModel(contentResolver) as T
+        return GalleryViewModel(contentResolver, bucketId) as T
     }
 }
 
 class MainActivity : ComponentActivity() {
-    private val viewModel by viewModels<GalleryViewModel> { GalleryViewModelFactory(contentResolver) }
+    private val albumBucketId: Long? by lazy {
+        if (!intent.hasExtra(EXTRA_BUCKET_ID)) null
+        else intent.getLongExtra(EXTRA_BUCKET_ID, NO_BUCKET_FILTER).takeIf { it != NO_BUCKET_FILTER }
+    }
+    private val viewModel by viewModels<GalleryViewModel> { GalleryViewModelFactory(contentResolver, albumBucketId) }
 
     private lateinit var adapter: MediaPagingAdapter
     private val selectedIds = linkedSetOf<String>()
@@ -184,10 +206,13 @@ class MainActivity : ComponentActivity() {
 
     private lateinit var selectedCountText: TextView
     private lateinit var shareButton: ImageButton
+    private lateinit var albumButton: ImageButton
     private lateinit var deleteButton: ImageButton
     private lateinit var emptyStateText: TextView
     private lateinit var grantPermissionButton: Button
     private var refreshState: LoadState = LoadState.NotLoading(endOfPaginationReached = false)
+    private var pendingDeleteUris: ArrayList<Uri>? = null
+
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -198,12 +223,32 @@ class MainActivity : ComponentActivity() {
         updateEmptyState()
     }
 
+    private val previewLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val deleted = result.data?.getBooleanExtra(PreviewActivity.EXTRA_DELETED, false) == true
+        if (result.resultCode == RESULT_OK && deleted) {
+            adapter.refresh()
+        }
+    }
+
+    private val deletePermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.StartIntentSenderForResult()
+    ) { result ->
+        val uris = pendingDeleteUris ?: return@registerForActivityResult
+        pendingDeleteUris = null
+        if (result.resultCode == RESULT_OK) {
+            onDeleteCompleted(successCount = uris.size, requestedCount = uris.size)
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
         selectedCountText = findViewById(R.id.selectedCountText)
         shareButton = findViewById(R.id.shareButton)
+        albumButton = findViewById(R.id.albumButton)
         deleteButton = findViewById(R.id.deleteButton)
         emptyStateText = findViewById(R.id.emptyStateText)
         grantPermissionButton = findViewById(R.id.grantPermissionButton)
@@ -215,7 +260,15 @@ class MainActivity : ComponentActivity() {
         recycler.setHasFixedSize(true)
         recycler.setItemViewCacheSize(20)
         recycler.recycledViewPool.setMaxRecycledViews(0, 30)
-        recycler.isDrawingCacheEnabled = false
+        val gridActionsBar = findViewById<View>(R.id.gridActionsBar)
+        ViewCompat.setOnApplyWindowInsetsListener(gridActionsBar) { view, insets ->
+            val navBarInset = insets.getInsets(WindowInsetsCompat.Type.navigationBars()).bottom
+            view.updateLayoutParams<ViewGroup.MarginLayoutParams> {
+                bottomMargin = resources.getDimensionPixelSize(R.dimen.preview_actions_bottom_margin) + navBarInset
+            }
+            insets
+        }
+        ViewCompat.requestApplyInsets(gridActionsBar)
 
         adapter = MediaPagingAdapter(
             onClick = { item -> onMediaClick(item) },
@@ -224,6 +277,7 @@ class MainActivity : ComponentActivity() {
         recycler.adapter = adapter
 
         shareButton.setOnClickListener { shareSelected() }
+        albumButton.setOnClickListener { openAlbums() }
         deleteButton.setOnClickListener { deleteSelected() }
         grantPermissionButton.setOnClickListener { requestMediaPermissions() }
         renderSelectionUi()
@@ -262,7 +316,7 @@ class MainActivity : ComponentActivity() {
             .putStringArrayListExtra(PreviewActivity.EXTRA_URIS, uris)
             .putExtra(PreviewActivity.EXTRA_IS_VIDEOS, videos)
             .putExtra(PreviewActivity.EXTRA_START_INDEX, startIndex)
-        startActivity(intent)
+        previewLauncher.launch(intent)
     }
 
     private fun toggleSelection(item: MediaItem) {
@@ -279,9 +333,13 @@ class MainActivity : ComponentActivity() {
     private fun renderSelectionUi() {
         val hasSelection = selectedIds.isNotEmpty()
         selectedCountText.visibility = if (hasSelection) View.VISIBLE else View.GONE
-        shareButton.visibility = if (hasSelection) View.VISIBLE else View.GONE
-        deleteButton.visibility = if (hasSelection) View.VISIBLE else View.GONE
         selectedCountText.text = "${selectedIds.size} selected"
+
+        shareButton.isEnabled = hasSelection
+        deleteButton.isEnabled = hasSelection
+        shareButton.alpha = if (hasSelection) 1f else 0.45f
+        deleteButton.alpha = if (hasSelection) 1f else 0.45f
+        albumButton.alpha = 1f
     }
 
     private fun updateEmptyState() {
@@ -336,22 +394,44 @@ class MainActivity : ComponentActivity() {
 
     private fun deleteSelected() {
         if (selectedItems.isEmpty()) return
+        val uris = ArrayList(selectedItems.values.map { it.contentUri })
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            val request = MediaStore.createDeleteRequest(contentResolver, uris)
+            pendingDeleteUris = uris
+            deletePermissionLauncher.launch(
+                IntentSenderRequest.Builder(request.intentSender).build()
+            )
+            return
+        }
+
         var success = 0
-        selectedItems.values.forEach { item ->
-            runCatching {
-                contentResolver.delete(item.contentUri, null, null)
-            }.onSuccess {
-                success += 1
-            }.onFailure {
-                Log.w("MainActivity", "Delete failed for ${item.contentUri}", it)
+        uris.forEach { uri ->
+            try {
+                val deleted = contentResolver.delete(uri, null, null)
+                if (deleted > 0) success += 1
+            } catch (securityException: SecurityException) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && securityException is RecoverableSecurityException) {
+                    Log.w("MainActivity", "Delete requires user approval on Android Q: $uri", securityException)
+                } else {
+                    Log.w("MainActivity", "Delete failed for $uri", securityException)
+                }
             }
         }
-        Toast.makeText(this, "Deleted $success/${selectedItems.size}", Toast.LENGTH_SHORT).show()
+        onDeleteCompleted(successCount = success, requestedCount = uris.size)
+    }
+
+    private fun onDeleteCompleted(successCount: Int, requestedCount: Int) {
+        Toast.makeText(this, "Deleted $successCount/$requestedCount", Toast.LENGTH_SHORT).show()
         selectedIds.clear()
         selectedItems.clear()
         adapter.setSelectedIds(emptySet())
         renderSelectionUi()
         adapter.refresh()
+    }
+
+    private fun openAlbums() {
+        startActivity(Intent(this, AlbumsActivity::class.java))
     }
 
     private fun calculateSpanCount(): Int {
@@ -403,6 +483,11 @@ class MainActivity : ComponentActivity() {
 
     private fun hasPermission(permission: String): Boolean {
         return ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED
+    }
+
+    companion object {
+        const val EXTRA_BUCKET_ID = "bucket_id"
+        const val EXTRA_ALBUM_NAME = "album_name"
     }
 }
 
