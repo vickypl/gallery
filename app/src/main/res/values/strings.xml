@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">Prism Gallery</string>
+    <string name="app_name">Vallery</string>
     <string name="preview_share">Share</string>
     <string name="preview_album">Album</string>
     <string name="preview_delete">Delete</string>
