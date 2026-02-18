@@ -92,7 +92,9 @@ class PreviewActivity : ComponentActivity() {
             startActivity(Intent.createChooser(shareIntent, getString(R.string.preview_share)))
         }
 
-        albumButton.setOnClickListener { finish() }
+        albumButton.setOnClickListener {
+            startActivity(Intent(this, AlbumsActivity::class.java))
+        }
 
         deleteButton.setOnClickListener { requestDeleteAt(pager.currentItem) }
     }

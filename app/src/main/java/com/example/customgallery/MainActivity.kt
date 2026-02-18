@@ -48,6 +48,7 @@ import kotlinx.coroutines.flow.update
 
 private const val PAGE_SIZE = 150
 private const val THUMB_SIZE = 400
+private const val NO_BUCKET_FILTER = Long.MIN_VALUE
 
 data class MediaItem(
     val id: Long,
@@ -60,7 +61,8 @@ data class MediaItem(
 class MediaPagingSource(
     private val contentResolver: ContentResolver,
     private val canReadImages: Boolean,
-    private val canReadVideos: Boolean
+    private val canReadVideos: Boolean,
+    private val bucketId: Long?
 ) : PagingSource<Int, MediaItem>() {
 
     override suspend fun load(params: LoadParams<Int>): LoadResult<Int, MediaItem> {
@@ -82,13 +84,18 @@ class MediaPagingSource(
                 if (canReadVideos) add(MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO)
             }
 
+            val selectionArgs = mediaTypes.map { it.toString() }.toMutableList()
             val selection = buildString {
                 append("${MediaStore.Files.FileColumns.MEDIA_TYPE} IN (")
                 append(mediaTypes.joinToString(",") { "?" })
                 append(")")
+                bucketId?.let {
+                    append(" AND ${MediaStore.Files.FileColumns.BUCKET_ID} = ?")
+                    selectionArgs += it.toString()
+                }
             }
 
-            val args = mediaTypes.map { it.toString() }.toTypedArray()
+            val args = selectionArgs.toTypedArray()
             val sortOrder = "${MediaStore.Files.FileColumns.DATE_MODIFIED} DESC, ${MediaStore.Files.FileColumns._ID} DESC"
 
             val items = mutableListOf<MediaItem>()
@@ -148,7 +155,10 @@ class MediaPagingSource(
     }
 }
 
-class GalleryViewModel(private val contentResolver: ContentResolver) : ViewModel() {
+class GalleryViewModel(
+    private val contentResolver: ContentResolver,
+    private val bucketId: Long?
+) : ViewModel() {
     private val permissionState = MutableStateFlow(false to false)
 
     val mediaFlow: Flow<PagingData<MediaItem>> = permissionState.flatMapLatest { (images, videos) ->
@@ -159,7 +169,7 @@ class GalleryViewModel(private val contentResolver: ContentResolver) : ViewModel
                 prefetchDistance = 50,
                 enablePlaceholders = false
             ),
-            pagingSourceFactory = { MediaPagingSource(contentResolver, images, videos) }
+            pagingSourceFactory = { MediaPagingSource(contentResolver, images, videos, bucketId) }
         ).flow
     }.cachedIn(viewModelScope)
 
@@ -168,15 +178,22 @@ class GalleryViewModel(private val contentResolver: ContentResolver) : ViewModel
     }
 }
 
-class GalleryViewModelFactory(private val contentResolver: ContentResolver) : ViewModelProvider.Factory {
+class GalleryViewModelFactory(
+    private val contentResolver: ContentResolver,
+    private val bucketId: Long?
+) : ViewModelProvider.Factory {
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
         @Suppress("UNCHECKED_CAST")
-        return GalleryViewModel(contentResolver) as T
+        return GalleryViewModel(contentResolver, bucketId) as T
     }
 }
 
 class MainActivity : ComponentActivity() {
-    private val viewModel by viewModels<GalleryViewModel> { GalleryViewModelFactory(contentResolver) }
+    private val albumBucketId: Long? by lazy {
+        if (!intent.hasExtra(EXTRA_BUCKET_ID)) null
+        else intent.getLongExtra(EXTRA_BUCKET_ID, NO_BUCKET_FILTER).takeIf { it != NO_BUCKET_FILTER }
+    }
+    private val viewModel by viewModels<GalleryViewModel> { GalleryViewModelFactory(contentResolver, albumBucketId) }
 
     private lateinit var adapter: MediaPagingAdapter
     private val selectedIds = linkedSetOf<String>()
@@ -412,6 +429,11 @@ class MainActivity : ComponentActivity() {
 
     private fun hasPermission(permission: String): Boolean {
         return ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED
+    }
+
+    companion object {
+        const val EXTRA_BUCKET_ID = "bucket_id"
+        const val EXTRA_ALBUM_NAME = "album_name"
     }
 }
 

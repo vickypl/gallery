@@ -29,35 +29,38 @@
 
         <ImageButton
             android:id="@+id/previewShareButton"
-            android:layout_width="40dp"
-            android:layout_height="40dp"
-            android:background="@android:color/transparent"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:background="@drawable/bg_preview_share"
             android:contentDescription="@string/preview_share"
             android:src="@android:drawable/ic_menu_share"
             android:tint="@android:color/white"
+            android:padding="10dp"
             app:layout_constraintStart_toStartOf="parent"
             app:layout_constraintTop_toTopOf="parent" />
 
         <ImageButton
             android:id="@+id/previewAlbumButton"
-            android:layout_width="40dp"
-            android:layout_height="40dp"
-            android:background="@android:color/transparent"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:background="@drawable/bg_preview_album"
             android:contentDescription="@string/preview_album"
             android:src="@android:drawable/ic_menu_gallery"
             android:tint="@android:color/white"
+            android:padding="10dp"
             app:layout_constraintEnd_toEndOf="parent"
             app:layout_constraintStart_toStartOf="parent"
             app:layout_constraintTop_toTopOf="parent" />
 
         <ImageButton
             android:id="@+id/previewDeleteButton"
-            android:layout_width="40dp"
-            android:layout_height="40dp"
-            android:background="@android:color/transparent"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:background="@drawable/bg_preview_delete"
             android:contentDescription="@string/preview_delete"
             android:src="@android:drawable/ic_menu_delete"
             android:tint="@android:color/white"
+            android:padding="10dp"
             app:layout_constraintEnd_toEndOf="parent"
             app:layout_constraintTop_toTopOf="parent" />
 
