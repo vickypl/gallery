@@ -1,8 +1,11 @@
 package com.example.customgallery
 
 import android.content.Intent
+import android.os.Build
 import android.net.Uri
 import android.os.Bundle
+import android.provider.MediaStore
+import android.app.RecoverableSecurityException
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -10,6 +13,8 @@ import android.widget.ImageButton
 import android.widget.ImageView
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.result.IntentSenderRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.updateLayoutParams
@@ -22,6 +27,22 @@ import androidx.viewpager2.widget.ViewPager2
 import com.bumptech.glide.Glide
 
 class PreviewActivity : ComponentActivity() {
+
+    private lateinit var pager: ViewPager2
+    private lateinit var adapter: PreviewPagerAdapter
+    private lateinit var items: MutableList<PreviewItem>
+
+    private var pendingDeletePosition: Int? = null
+    private var hasDeletedItem = false
+    private val deletePermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.StartIntentSenderForResult()
+    ) { result ->
+        val position = pendingDeletePosition ?: return@registerForActivityResult
+        pendingDeletePosition = null
+        if (result.resultCode == RESULT_OK) {
+            performDeleteAt(position)
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -36,18 +57,18 @@ class PreviewActivity : ComponentActivity() {
             return
         }
 
-        val items = uriStrings.mapIndexed { index, value ->
+        items = uriStrings.mapIndexed { index, value ->
             val uri = Uri.parse(value)
             val isVideo = isVideos?.getOrNull(index) ?: false
             PreviewItem(uri = uri, isVideo = isVideo)
         }.toMutableList()
 
-        val pager = findViewById<ViewPager2>(R.id.previewPager)
+        pager = findViewById(R.id.previewPager)
         val actionBar = findViewById<View>(R.id.previewActionsBar)
         val shareButton = findViewById<ImageButton>(R.id.previewShareButton)
         val albumButton = findViewById<ImageButton>(R.id.previewAlbumButton)
         val deleteButton = findViewById<ImageButton>(R.id.previewDeleteButton)
-        val adapter = PreviewPagerAdapter(items)
+        adapter = PreviewPagerAdapter(items)
 
         pager.adapter = adapter
         pager.setCurrentItem(startIndex.coerceIn(0, items.lastIndex), false)
@@ -73,28 +94,63 @@ class PreviewActivity : ComponentActivity() {
 
         albumButton.setOnClickListener { finish() }
 
-        deleteButton.setOnClickListener {
-            val position = pager.currentItem
-            val itemToDelete = items.getOrNull(position) ?: return@setOnClickListener
-            val deletedCount = contentResolver.delete(itemToDelete.uri, null, null)
-            if (deletedCount > 0) {
-                adapter.removeAt(position)
-                if (items.isEmpty()) {
-                    finish()
-                } else {
-                    val nextIndex = position.coerceAtMost(items.lastIndex)
-                    pager.setCurrentItem(nextIndex, false)
-                }
+        deleteButton.setOnClickListener { requestDeleteAt(pager.currentItem) }
+    }
+
+    private fun requestDeleteAt(position: Int) {
+        val itemToDelete = items.getOrNull(position) ?: return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            val request = MediaStore.createDeleteRequest(contentResolver, listOf(itemToDelete.uri))
+            pendingDeletePosition = position
+            deletePermissionLauncher.launch(
+                IntentSenderRequest.Builder(request.intentSender).build()
+            )
+            return
+        }
+        try {
+            performDeleteAt(position)
+        } catch (securityException: SecurityException) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && securityException is RecoverableSecurityException) {
+                pendingDeletePosition = position
+                deletePermissionLauncher.launch(
+                    IntentSenderRequest.Builder(securityException.userAction.actionIntent.intentSender).build()
+                )
             } else {
                 Toast.makeText(this, R.string.preview_delete_failed, Toast.LENGTH_SHORT).show()
             }
         }
     }
 
+    private fun performDeleteAt(position: Int) {
+        val itemToDelete = items.getOrNull(position) ?: return
+        val deletedCount = contentResolver.delete(itemToDelete.uri, null, null)
+        if (deletedCount <= 0) {
+            Toast.makeText(this, R.string.preview_delete_failed, Toast.LENGTH_SHORT).show()
+            return
+        }
+        hasDeletedItem = true
+        setResult(RESULT_OK, Intent().putExtra(EXTRA_DELETED, true))
+        adapter.removeAt(position)
+        if (items.isEmpty()) {
+            finish()
+        } else {
+            val nextIndex = position.coerceAtMost(items.lastIndex)
+            pager.setCurrentItem(nextIndex, false)
+        }
+    }
+
+    override fun finish() {
+        if (hasDeletedItem) {
+            setResult(RESULT_OK, Intent().putExtra(EXTRA_DELETED, true))
+        }
+        super.finish()
+    }
+
     companion object {
         const val EXTRA_URIS = "preview_uris"
         const val EXTRA_IS_VIDEOS = "preview_is_videos"
         const val EXTRA_START_INDEX = "preview_start_index"
+        const val EXTRA_DELETED = "preview_deleted"
     }
 }
 

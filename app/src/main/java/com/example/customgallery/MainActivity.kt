@@ -198,6 +198,15 @@ class MainActivity : ComponentActivity() {
         updateEmptyState()
     }
 
+    private val previewLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val deleted = result.data?.getBooleanExtra(PreviewActivity.EXTRA_DELETED, false) == true
+        if (result.resultCode == RESULT_OK && deleted) {
+            adapter.refresh()
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
@@ -262,7 +271,7 @@ class MainActivity : ComponentActivity() {
             .putStringArrayListExtra(PreviewActivity.EXTRA_URIS, uris)
             .putExtra(PreviewActivity.EXTRA_IS_VIDEOS, videos)
             .putExtra(PreviewActivity.EXTRA_START_INDEX, startIndex)
-        startActivity(intent)
+        previewLauncher.launch(intent)
     }
 
     private fun toggleSelection(item: MediaItem) {
