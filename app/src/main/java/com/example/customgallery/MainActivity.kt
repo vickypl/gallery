@@ -206,12 +206,16 @@ class MainActivity : ComponentActivity() {
 
     private lateinit var selectedCountText: TextView
     private lateinit var shareButton: ImageButton
-    private lateinit var albumButton: ImageButton
     private lateinit var deleteButton: ImageButton
     private lateinit var emptyStateText: TextView
     private lateinit var grantPermissionButton: Button
     private var refreshState: LoadState = LoadState.NotLoading(endOfPaginationReached = false)
     private var pendingDeleteUris: ArrayList<Uri>? = null
+
+    private var touchStartX = 0f
+    private var touchStartY = 0f
+    private val swipeTriggerDistance by lazy { 96f * resources.displayMetrics.density }
+    private val swipeVerticalTolerance by lazy { 56f * resources.displayMetrics.density }
 
 
     private val permissionLauncher = registerForActivityResult(
@@ -248,7 +252,6 @@ class MainActivity : ComponentActivity() {
 
         selectedCountText = findViewById(R.id.selectedCountText)
         shareButton = findViewById(R.id.shareButton)
-        albumButton = findViewById(R.id.albumButton)
         deleteButton = findViewById(R.id.deleteButton)
         emptyStateText = findViewById(R.id.emptyStateText)
         grantPermissionButton = findViewById(R.id.grantPermissionButton)
@@ -275,9 +278,28 @@ class MainActivity : ComponentActivity() {
             onLongClick = { item -> toggleSelection(item) }
         )
         recycler.adapter = adapter
+        recycler.setOnTouchListener { _, event ->
+            when (event.actionMasked) {
+                android.view.MotionEvent.ACTION_DOWN -> {
+                    touchStartX = event.x
+                    touchStartY = event.y
+                }
+
+                android.view.MotionEvent.ACTION_MOVE -> {
+                    val deltaX = touchStartX - event.x
+                    val deltaY = kotlin.math.abs(event.y - touchStartY)
+                    if (deltaX > swipeTriggerDistance && deltaY < swipeVerticalTolerance) {
+                        openAlbums()
+                        touchStartX = event.x
+                        touchStartY = event.y
+                        return@setOnTouchListener true
+                    }
+                }
+            }
+            false
+        }
 
         shareButton.setOnClickListener { shareSelected() }
-        albumButton.setOnClickListener { openAlbums() }
         deleteButton.setOnClickListener { deleteSelected() }
         grantPermissionButton.setOnClickListener { requestMediaPermissions() }
         renderSelectionUi()
@@ -339,7 +361,6 @@ class MainActivity : ComponentActivity() {
         deleteButton.isEnabled = hasSelection
         shareButton.alpha = if (hasSelection) 1f else 0.45f
         deleteButton.alpha = if (hasSelection) 1f else 0.45f
-        albumButton.alpha = 1f
     }
 
     private fun updateEmptyState() {

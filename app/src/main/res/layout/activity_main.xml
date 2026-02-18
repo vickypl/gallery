@@ -82,19 +82,6 @@
             app:layout_constraintTop_toTopOf="parent" />
 
         <ImageButton
-            android:id="@+id/albumButton"
-            android:layout_width="48dp"
-            android:layout_height="48dp"
-            android:background="@drawable/bg_preview_album"
-            android:contentDescription="@string/preview_album"
-            android:padding="10dp"
-            android:src="@android:drawable/ic_menu_gallery"
-            android:tint="@android:color/white"
-            app:layout_constraintEnd_toEndOf="parent"
-            app:layout_constraintStart_toStartOf="parent"
-            app:layout_constraintTop_toTopOf="parent" />
-
-        <ImageButton
             android:id="@+id/deleteButton"
             android:layout_width="48dp"
             android:layout_height="48dp"
