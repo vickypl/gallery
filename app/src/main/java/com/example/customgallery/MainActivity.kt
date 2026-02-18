@@ -23,6 +23,9 @@ import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.core.content.ContextCompat
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.updateLayoutParams
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.lifecycleScope
@@ -201,6 +204,7 @@ class MainActivity : ComponentActivity() {
 
     private lateinit var selectedCountText: TextView
     private lateinit var shareButton: ImageButton
+    private lateinit var albumButton: ImageButton
     private lateinit var deleteButton: ImageButton
     private lateinit var emptyStateText: TextView
     private lateinit var grantPermissionButton: Button
@@ -230,6 +234,7 @@ class MainActivity : ComponentActivity() {
 
         selectedCountText = findViewById(R.id.selectedCountText)
         shareButton = findViewById(R.id.shareButton)
+        albumButton = findViewById(R.id.albumButton)
         deleteButton = findViewById(R.id.deleteButton)
         emptyStateText = findViewById(R.id.emptyStateText)
         grantPermissionButton = findViewById(R.id.grantPermissionButton)
@@ -241,7 +246,15 @@ class MainActivity : ComponentActivity() {
         recycler.setHasFixedSize(true)
         recycler.setItemViewCacheSize(20)
         recycler.recycledViewPool.setMaxRecycledViews(0, 30)
-        recycler.isDrawingCacheEnabled = false
+        val gridActionsBar = findViewById<View>(R.id.gridActionsBar)
+        ViewCompat.setOnApplyWindowInsetsListener(gridActionsBar) { view, insets ->
+            val navBarInset = insets.getInsets(WindowInsetsCompat.Type.navigationBars()).bottom
+            view.updateLayoutParams<ViewGroup.MarginLayoutParams> {
+                bottomMargin = resources.getDimensionPixelSize(R.dimen.preview_actions_bottom_margin) + navBarInset
+            }
+            insets
+        }
+        ViewCompat.requestApplyInsets(gridActionsBar)
 
         adapter = MediaPagingAdapter(
             onClick = { item -> onMediaClick(item) },
@@ -250,6 +263,7 @@ class MainActivity : ComponentActivity() {
         recycler.adapter = adapter
 
         shareButton.setOnClickListener { shareSelected() }
+        albumButton.setOnClickListener { openAlbums() }
         deleteButton.setOnClickListener { deleteSelected() }
         grantPermissionButton.setOnClickListener { requestMediaPermissions() }
         renderSelectionUi()
@@ -305,9 +319,13 @@ class MainActivity : ComponentActivity() {
     private fun renderSelectionUi() {
         val hasSelection = selectedIds.isNotEmpty()
         selectedCountText.visibility = if (hasSelection) View.VISIBLE else View.GONE
-        shareButton.visibility = if (hasSelection) View.VISIBLE else View.GONE
-        deleteButton.visibility = if (hasSelection) View.VISIBLE else View.GONE
         selectedCountText.text = "${selectedIds.size} selected"
+
+        shareButton.isEnabled = hasSelection
+        deleteButton.isEnabled = hasSelection
+        shareButton.alpha = if (hasSelection) 1f else 0.45f
+        deleteButton.alpha = if (hasSelection) 1f else 0.45f
+        albumButton.alpha = 1f
     }
 
     private fun updateEmptyState() {
@@ -378,6 +396,10 @@ class MainActivity : ComponentActivity() {
         adapter.setSelectedIds(emptySet())
         renderSelectionUi()
         adapter.refresh()
+    }
+
+    private fun openAlbums() {
+        startActivity(Intent(this, AlbumsActivity::class.java))
     }
 
     private fun calculateSpanCount(): Int {
